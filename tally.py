@@ -24,7 +24,17 @@ def _log(message):
         stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(f"{stamp} {message}\n")
-    except OSError:
+    except Exception:
+        pass
+
+
+def _safe_log(message):
+    """Belt-and-braces wrapper: logging itself must never be allowed to
+    escape, whether _log raises or building `message` raised before this
+    was even called."""
+    try:
+        _log(message)
+    except Exception:
         pass
 
 
@@ -72,8 +82,16 @@ def main():
         session_id = _session_id_from_stdin()
         with store.exclusive_lock(paths.lock_path()):
             refresh(session_id)
-    except Exception:
-        _log("tally failed:\n" + traceback.format_exc())
+    except store.LockTimeout as exc:
+        try:
+            _safe_log(f"skipped: {exc}")
+        except Exception:
+            pass
+    except BaseException:
+        try:
+            _safe_log("tally failed:\n" + traceback.format_exc())
+        except Exception:
+            pass
     return 0
 
 

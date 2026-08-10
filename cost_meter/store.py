@@ -4,21 +4,41 @@
 import fcntl
 import json
 import os
+import time
 from contextlib import contextmanager
 
 PRUNE_DAYS = 8
 
 
+class LockTimeout(Exception):
+    """Raised when another run holds the lock longer than we are willing to wait."""
+
+
 @contextmanager
-def exclusive_lock(path):
-    """Serialise concurrent tally runs from parallel Claude Code sessions."""
+def exclusive_lock(path, timeout=10.0, poll=0.1):
+    """Serialise concurrent tally runs from parallel Claude Code sessions.
+
+    Bounded on purpose: a wedged holder must not queue every later hook
+    invocation behind it forever. On timeout the caller skips this refresh and
+    leaves the previous state in place.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "w", encoding="utf-8")
+    deadline = time.monotonic() + timeout
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise LockTimeout(f"another run held {path} for over {timeout}s")
+                time.sleep(poll)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
         handle.close()
 
 
