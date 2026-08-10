@@ -38,27 +38,28 @@ def main():
         print(f"could not calibrate: {exc}", file=sys.stderr)
         return 1
 
-    config = store.read_json(paths.config_path(), default={}) or {}
-
+    # Validate every requested window up front, so a run either calibrates
+    # everything it was asked for or changes nothing at all. Without this, a
+    # mixed --5h/--week run could print a success for the first window and
+    # then bail on the second's zero-spend guard before ever writing
+    # config.json — a printed success that was never persisted.
+    requested = []
     if args.five_hour is not None:
-        usd = state["window_5h"]["usd"]
-        if usd <= 0:
-            print("no spend recorded in the last 5 hours; nothing to calibrate "
-                  "against", file=sys.stderr)
-            return 1
-        config["ceiling_5h_usd"] = usd / (args.five_hour / 100.0)
-        print(f"5h window: ${usd:.2f} = {args.five_hour:g}% "
-              f"-> ceiling ${config['ceiling_5h_usd']:.2f}")
-
+        requested.append(("5h window", "window_5h", "ceiling_5h_usd", args.five_hour))
     if args.week is not None:
-        usd = state["window_7d"]["usd"]
-        if usd <= 0:
-            print("no spend recorded in the last 7 days; nothing to calibrate "
-                  "against", file=sys.stderr)
+        requested.append(("week", "window_7d", "ceiling_7d_usd", args.week))
+
+    for label, window, _, _ in requested:
+        if state[window]["usd"] <= 0:
+            print(f"no spend recorded in the {label}; nothing to calibrate against",
+                  file=sys.stderr)
             return 1
-        config["ceiling_7d_usd"] = usd / (args.week / 100.0)
-        print(f"week: ${usd:.2f} = {args.week:g}% "
-              f"-> ceiling ${config['ceiling_7d_usd']:.2f}")
+
+    config = store.read_json(paths.config_path(), default={}) or {}
+    for label, window, key, pct in requested:
+        usd = state[window]["usd"]
+        config[key] = usd / (pct / 100.0)
+        print(f"{label}: ${usd:.2f} = {pct:g}% -> ceiling ${config[key]:.2f}")
 
     store.write_json_atomic(paths.config_path(), config)
 
