@@ -18,9 +18,18 @@ your screen. It shows six rows:
 - **week** — USD spent in the trailing 7 days, with a `%` of your calibrated
   weekly limit once calibrated
 
-A seventh row appears only when needed: a warning listing any model that has
-no entry in `pricing.json`, so an unpriced model is visible instead of
-silently costing nothing.
+A seventh row appears only when needed. It carries two kinds of warning:
+
+- `! stale 1 h 37 min` — `state.json` has not been rewritten for over ten
+  minutes, so the figures above it are that old. Every value row is greyed
+  out at the same time, including the limit rows, which lose their
+  green/amber/red colour. This is what a broken `Stop` hook looks like: the
+  hook always exits 0 by design, so without this marker the panel would keep
+  showing hours-old numbers as though they were current. It also shows up
+  after a genuinely idle stretch, which is honest — the numbers really are
+  ten minutes old.
+- `? claude-something` — a model with no entry in `pricing.json`, so an
+  unpriced model is visible instead of silently costing nothing.
 
 Cost is computed from the same token counts Claude Code already writes to
 its own transcript files under `~/.claude/projects/`; the tool reads those,
@@ -88,6 +97,13 @@ instead of requiring a second, separate weighting scheme.
 million tokens (input and output) for each model you use. Edit it directly
 whenever Anthropic changes its rates.
 
+One rate in that table has a known expiry date: `claude-sonnet-5` is priced
+at its **introductory** rate of $2.00 / $10.00, which is in force only
+through **2026-08-31**. From 2026-09-01 the sticker price of $3.00 / $15.00
+applies and the two numbers need editing by hand. Nothing in the tool tracks
+this — there is deliberately no dated-override mechanism, so the table says
+what you tell it and the calendar is yours to watch.
+
 A model that has no entry in this table is **never** treated as free. It is
 excluded from the priced totals and instead surfaces as a `?` warning row on
 the panel, so a pricing gap is visible rather than silently undercounting
@@ -121,6 +137,13 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
 - `state.json` — the numbers the widget actually reads and displays.
 - `offsets.json` — per-transcript file read positions, so re-running the
   scan never re-reads or double-counts a line.
+- `session_marks.json` — one bookmark per session recording the newest event
+  already reported as that session's **last turn**. This is what keeps the
+  row correct when several Claude Code sessions run at once: whichever hook
+  fires first picks up every session's new messages, so "new since my own
+  last run" has to be remembered per session rather than inferred from which
+  run happened to append the events. Bookmarks for sessions idle longer than
+  the 8-day prune window are dropped.
 - `config.json` — calibrated ceilings (`ceiling_5h_usd`, `ceiling_7d_usd`)
   and the widget's last window position.
 - `cost-meter.log` — where the `Stop` hook and `calibrate.py` log faults
@@ -130,13 +153,17 @@ Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
 `~/.claude/projects/` from scratch. You lose your calibrated ceilings and
 the saved window position, nothing else — re-run `calibrate.py` to get the
-percentages back.
+percentages back. With the bookmarks gone too, the first turn after a reset
+reads as the whole session's cost, since there is no earlier mark to measure
+from; it corrects itself on the next turn.
 
 ## Troubleshooting
 
-- **The widget stops updating** — check `data/cost-meter.log`. Every fault on
-  the `Stop` hook's critical path is caught and logged there rather than
-  shown, by design, so a stuck panel almost always has a line waiting there.
+- **The widget stops updating** — the panel says so itself: every value row
+  greys out and the warning row shows how long it has been (`! stale 1 h
+  37 min`). Check `data/cost-meter.log`. Every fault on the `Stop` hook's
+  critical path is caught and logged there rather than shown, by design, so a
+  stuck panel almost always has a line waiting there.
 - **Numbers look lower than expected** — check the panel for a `?` warning
   row. It means at least one model you used has no entry in `pricing.json`
   and is being excluded from the totals rather than counted as zero.

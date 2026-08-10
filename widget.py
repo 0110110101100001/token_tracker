@@ -7,6 +7,7 @@ sets GDK_BACKEND=x11 so the window can place and raise itself.
 
 import argparse
 import sys
+import time
 
 import gi
 
@@ -16,12 +17,19 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from cost_meter import paths, store  # noqa: E402
+from cost_meter import paths, store, summary  # noqa: E402
 
 MARGIN = 24
 WIDTH = 240
 AMBER_AT = 60
 RED_AT = 85
+# Colour classes for the two limit rows. Declared after `muted` in the CSS, so
+# they win the cascade wherever both apply.
+LIMIT_CLASSES = ("green", "amber", "red")
+# The file monitor only fires when the hook writes, so a hook that has stopped
+# writing would never trigger a redraw — which is exactly the case the staleness
+# row exists to report. This timer is the only thing that notices.
+STALE_POLL_SECONDS = 60
 
 CSS = b"""
 window { background-color: #1e1e22; }
@@ -89,6 +97,10 @@ class CostMeter(Gtk.Window):
         grid.attach(Gtk.Separator(), 0, 3, 2, 1)
         self.window_5h = _row(grid, 4, "5h window")
         self.window_7d = _row(grid, 5, "week")
+        # Split because `muted` has two owners: staleness for all five rows, and
+        # set_window_row for the two window rows when there is no calibration.
+        self.usd_values = (self.last_turn, self.session, self.today)
+        self.window_values = (self.window_5h, self.window_7d)
 
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
@@ -98,6 +110,7 @@ class CostMeter(Gtk.Window):
         self.watch()
         self.refresh()  # before place(), so the first anchor sees real content
         self.place()
+        GLib.timeout_add_seconds(STALE_POLL_SECONDS, self.refresh)
 
     def place(self):
         config = store.read_json(paths.config_path(), default={}) or {}
@@ -186,17 +199,59 @@ class CostMeter(Gtk.Window):
         self.set_window_row(self.window_5h, state.get("window_5h") or {})
         self.set_window_row(self.window_7d, state.get("window_7d") or {})
 
+        # A broken tally exits 0 and simply stops rewriting state.json, so
+        # without this the panel would keep showing hours-old figures as though
+        # they were current — the same invisible-gap failure the `?` row exists
+        # to prevent, reached from the other side.
+        stale, age = summary.staleness(state, time.time())
+
+        notes = []
+        if stale and age is None:
+            notes.append("! stale, age unknown")
+        elif stale:
+            notes.append(f"! stale {summary.format_age(age)}")
         unknown = state.get("unknown_models") or []
         if unknown:
-            self.warning.set_text("? " + ", ".join(unknown))
+            notes.append("? " + ", ".join(unknown))
+        if notes:
+            self.warning.set_text("   ".join(notes))
             self.warning.show()
         else:
             self.warning.hide()
+
+        # After set_window_row, which owns `muted` for the uncalibrated case.
+        self.set_stale(stale)
         return True
+
+    def set_stale(self, stale):
+        """Mute every value row while the state is stale.
+
+        Muting rather than hiding or zeroing: the last known figures are still
+        the best information available, they just stop being presented as
+        current. The warning row carries the age.
+        """
+        for label in self.usd_values:
+            context = label.get_style_context()
+            if stale:
+                context.add_class("muted")
+            else:
+                context.remove_class("muted")
+        if stale:
+            for label in self.window_values:
+                context = label.get_style_context()
+                # The colour classes are declared after `muted` in the CSS, so
+                # they would win the cascade and a stale limit row would still
+                # read confidently green or red. Drop the colour to mute it.
+                for name in LIMIT_CLASSES:
+                    context.remove_class(name)
+                context.add_class("muted")
+        # When fresh, the window rows are left alone: set_window_row has already
+        # set or cleared their `muted` for the uncalibrated case, and clearing it
+        # here would present an uncalibrated dollar figure as a calibrated one.
 
     def set_window_row(self, label, window):
         context = label.get_style_context()
-        for name in ("green", "amber", "red", "muted"):
+        for name in LIMIT_CLASSES + ("muted",):
             context.remove_class(name)
 
         pct = window.get("pct")

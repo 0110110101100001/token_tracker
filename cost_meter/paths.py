@@ -30,6 +30,10 @@ def offsets_path():
     return home() / "offsets.json"
 
 
+def session_marks_path():
+    return home() / "session_marks.json"
+
+
 def config_path():
     return home() / "config.json"
 

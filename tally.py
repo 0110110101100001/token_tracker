@@ -14,7 +14,7 @@ from cost_meter import paths, store
 from cost_meter.parser import scan
 from cost_meter.pricing import load_pricing
 from cost_meter.store import PRUNE_DAYS
-from cost_meter.summary import build_state
+from cost_meter.summary import build_state, new_turn_ids, prune_marks
 
 
 def _log(message):
@@ -49,7 +49,12 @@ def _session_id_from_stdin():
 
 
 def refresh(session_id, now=None):
-    """Do one incremental pass. Returns the state dict that was written."""
+    """Do one incremental pass. Returns the state dict that was written.
+
+    The caller must hold the lock from `paths.lock_path()`: this reads, appends
+    to and prunes events.jsonl, and rewrites offsets.json and session_marks.json,
+    none of it individually atomic.
+    """
     now = time.time() if now is None else now
 
     events_path = paths.events_path()
@@ -65,15 +70,25 @@ def refresh(session_id, now=None):
 
     pricing = load_pricing(paths.pricing_path())
     calibration = store.read_json(paths.config_path(), default={}) or {}
-    state = build_state(
-        store.read_events(events_path),
-        pricing,
-        session_id,
-        {e[1] for e in fresh},
-        now,
-        calibration,
-    )
+    events = store.read_events(events_path)
+
+    # last_turn is scoped to this session's own bookmark rather than to what this
+    # run happened to append: with parallel sessions the first hook to fire picks
+    # up everybody's new messages, so "appended by me" reads 0.00 for the rest.
+    marks_path = paths.session_marks_path()
+    marks = store.read_json(marks_path, default={}) or {}
+    turn_ids, mark = new_turn_ids(events, session_id, marks.get(session_id))
+
+    state = build_state(events, pricing, session_id, turn_ids, now, calibration)
     store.write_json_atomic(paths.state_path(), state)
+
+    # Advance the bookmark only after the state it describes is on disk, so a
+    # crash in between costs a repeated last_turn rather than a lost one.
+    if session_id and mark:
+        marks[session_id] = mark
+        store.write_json_atomic(
+            marks_path, prune_marks(marks, now - PRUNE_DAYS * 86400)
+        )
     return state
 
 
