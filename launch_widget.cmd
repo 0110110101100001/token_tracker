@@ -15,6 +15,16 @@ REM no network, no surprise install latency at session start.
 
 cd /d "%~dp0" || exit /b 0
 
+REM The installer puts pixi on the *user* PATH, which a process only picks up if
+REM it was started after the install. Claude Code is long-lived and inherits the
+REM environment of whatever terminal launched it, so a session started from an
+REM older shell sees no pixi and this hook would exit 0 having done nothing --
+REM silently, since it must never break a session. Prepending the default
+REM install directory covers that case; it is a no-op when pixi is already found.
+REM PATH, not an absolute call: cost_meter/launch.py spawns `pixi run widget`
+REM again for the panel itself and resolves it the same way, off PATH.
+where pixi >nul 2>&1 || set "PATH=%USERPROFILE%\.pixi\bin;%PATH%"
+
 pixi run --frozen launch >nul 2>&1
 
 exit /b 0

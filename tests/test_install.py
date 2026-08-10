@@ -1,12 +1,10 @@
 # tests/test_install.py
 import os
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from cost_meter import install, launch, paths
+from cost_meter import install, launch, paths, store
 
 # An absolute path the current platform recognises as one. A POSIX-shaped path
 # on Windows is not absolute, so `startswith(root + os.sep)` would compare two
@@ -26,8 +24,14 @@ def expected(event):
     names differ by platform and a hardcoded "hooks/tally.sh" would only ever
     test one of them.
     """
-    return [str(ROOT / script) for name, script, _ in install.HOOKS
+    return [str(ROOT / script) for name, script, _, _ in install.HOOKS
             if name == event]
+
+
+def groups(settings, event):
+    """Every hook group registered under `event`, in settings order."""
+    return [g for g in settings.get("hooks", {}).get(event, [])
+            if isinstance(g, dict)]
 
 
 def settings_with(*commands, event="Stop"):
@@ -117,6 +121,27 @@ class WidgetPidTest(TempHome):
         widget.clear_pid()  # must not raise
         self.assertTrue(paths.pid_path().exists())
 
+    def test_the_lock_a_panel_claims_is_the_one_the_launcher_checks(self):
+        # The two halves are in different modules and would drift apart in
+        # silence: the panel would come up, the launcher would never see it, and
+        # every session would stack another one.
+        import widget
+        handle = widget.claim_liveness_lock()
+        self.assertIsNotNone(handle)
+        try:
+            self.assertTrue(launch.panel_is_running())
+        finally:
+            store.release(handle)
+        self.assertFalse(launch.panel_is_running())
+
+    def test_a_second_panel_does_not_get_the_claim(self):
+        import widget
+        handle = widget.claim_liveness_lock()
+        try:
+            self.assertIsNone(widget.claim_liveness_lock())
+        finally:
+            store.release(handle)
+
 
 class ReadPidTest(TempHome):
     def test_a_written_pid_reads_back(self):
@@ -134,31 +159,41 @@ class ReadPidTest(TempHome):
         self.assertIsNone(launch.read_pid())
 
 
-class PidLivenessTest(unittest.TestCase):
-    """The probe that decides whether to start a second panel.
+class PanelLivenessTest(TempHome):
+    """The check that decides whether to start a second panel.
 
-    Worth its own tests because the two platforms share no implementation:
-    POSIX signals a pid, Windows waits on a process handle. os.kill is not an
-    option on Windows at all — CPython maps it onto TerminateProcess there, so
-    a signal-0 probe would kill the panel it is asking about.
+    It is a lock rather than a pid probe because of a bug this covers: Windows
+    reuses pid numbers, so any live process landing on the number a dead panel
+    left in widget.pid used to suppress the launch — in that session and in
+    every session after it, silently, because the hook exits 0 and says nothing.
     """
 
-    def test_our_own_pid_is_alive(self):
-        self.assertTrue(launch.pid_is_alive(os.getpid()))
+    def test_nothing_holding_it_means_no_panel(self):
+        self.assertFalse(launch.panel_is_running())
 
-    def test_an_exited_process_is_not_alive(self):
-        # A child we started and waited for, rather than an invented number:
-        # this pid is guaranteed to have existed and to be finished. On Windows
-        # the Popen object still holds a handle, so the pid remains openable —
-        # which is exactly why liveness is a wait, not an OpenProcess success.
-        proc = subprocess.Popen([sys.executable, "-c", ""])
-        proc.wait()
-        self.assertFalse(launch.pid_is_alive(proc.pid))
+    def test_a_held_lock_means_a_panel(self):
+        handle = store.try_acquire(paths.widget_lock_path())
+        self.assertIsNotNone(handle)
+        try:
+            self.assertTrue(launch.panel_is_running())
+        finally:
+            store.release(handle)
+        # Released, so the next session may start one again.
+        self.assertFalse(launch.panel_is_running())
 
-    def test_a_missing_or_impossible_pid_is_not_alive(self):
-        self.assertFalse(launch.pid_is_alive(None))
-        self.assertFalse(launch.pid_is_alive(0))
-        self.assertFalse(launch.pid_is_alive(-1))
+    def test_the_check_does_not_keep_the_lock(self):
+        # A launcher that held on to what it probed would lock out the panel it
+        # is about to start.
+        launch.panel_is_running()
+        handle = store.try_acquire(paths.widget_lock_path())
+        self.assertIsNotNone(handle)
+        store.release(handle)
+
+    def test_a_stale_pid_belonging_to_a_live_process_does_not_suppress(self):
+        # The regression itself: our own pid stands in for whatever unrelated
+        # process Windows handed the dead panel's number to.
+        paths.pid_path().write_text(f"{os.getpid()}\n", encoding="utf-8")
+        self.assertFalse(launch.panel_is_running())
 
 
 class AutostartOwnershipTest(unittest.TestCase):
@@ -230,6 +265,33 @@ class ApplyTest(unittest.TestCase):
         install.apply(settings, ROOT)
         self.assertEqual(len(commands(settings, "Stop")), 1)
         self.assertEqual(len(commands(settings, "SessionStart")), 1)
+
+    def test_session_start_carries_a_matcher(self):
+        # Registered without one, the group is not reliably run -- and the whole
+        # symptom is a panel that never appears, from a hook that exits 0 and
+        # writes nothing either way.
+        settings = {}
+        install.apply(settings, ROOT)
+        self.assertEqual([g.get("matcher") for g in groups(settings, "SessionStart")],
+                         ["startup|resume|clear|compact"])
+
+    def test_stop_carries_no_matcher(self):
+        # Stop has no notion of one; inventing a key here would be noise in
+        # somebody else's settings file.
+        settings = {}
+        install.apply(settings, ROOT)
+        for group in groups(settings, "Stop"):
+            self.assertNotIn("matcher", group)
+
+    def test_session_start_gets_the_longer_timeout(self):
+        # A cold first run pays for pixi starting, an interpreter booting and a
+        # virus scanner reading the environment. Killed on the timeout, the hook
+        # dies before it ever reaches the spawn.
+        settings = {}
+        install.apply(settings, ROOT)
+        timeouts = [h["timeout"] for g in groups(settings, "SessionStart")
+                    for h in g["hooks"]]
+        self.assertEqual(timeouts, [30])
 
     def test_preserves_unrelated_hooks(self):
         # The real settings.json on the development machine carries a PostToolUse

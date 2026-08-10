@@ -43,6 +43,36 @@ def _unlock(handle):
         fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def try_acquire(path):
+    """Take the lock without waiting and keep it. Returns a handle, or None.
+
+    The counterpart to exclusive_lock for a claim that has to outlive the call
+    rather than a critical section: the panel takes one of these at startup and
+    holds it until it exits, and cost_meter/launch.py's failure to take the same
+    one is what tells it a panel is already up. Release it with `release`.
+
+    A lock is used for that rather than a pid because the operating system
+    retracts it however the holder dies, including a hard kill -- where a pid
+    file survives, and Windows may hand that same number to something else.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+", encoding="utf-8")  # "a+" for the reason below
+    try:
+        _try_lock(handle)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def release(handle):
+    """Give back a lock from `try_acquire` and close its handle."""
+    try:
+        _unlock(handle)
+    finally:
+        handle.close()
+
+
 @contextmanager
 def exclusive_lock(path, timeout=10.0, poll=0.1):
     """Serialise concurrent tally runs from parallel Claude Code sessions.
@@ -115,6 +145,35 @@ def read_events(path):
     return events
 
 
+def _replace_with_retry(tmp, path, attempts=5, backoff=0.02):
+    """os.replace, retried while Windows says the destination is busy.
+
+    On POSIX rename is atomic and cannot fail this way, so there is nothing to
+    retry. On Windows the call fails with ERROR_ACCESS_DENIED whenever anyone
+    holds the destination open without FILE_SHARE_DELETE -- which is what the
+    panel does every time it reads state.json, and what a virus scanner does to
+    the temp file behind our back. Both are over in milliseconds.
+
+    Observed rather than theorised: a Stop hook lost a refresh to exactly this,
+    and a lost refresh is what puts `! stale` on a panel whose numbers were
+    being updated all along.
+
+    The last attempt is allowed to raise. A destination that is still busy after
+    a fifth of a second is not a race any more, and tally.py's caller logs it.
+    """
+    if os.name != "nt":
+        os.replace(tmp, path)
+        return
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(backoff * (attempt + 1))
+
+
 def prune_events(path, cutoff_epoch):
     """Drop events older than the cutoff. Returns how many were removed."""
     events = read_events(path)
@@ -125,7 +184,7 @@ def prune_events(path, cutoff_epoch):
         with open(tmp, "w", encoding="utf-8") as fh:
             for event in kept:
                 fh.write(json.dumps(event, separators=(",", ":")) + "\n")
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     return removed
 
 
@@ -135,7 +194,7 @@ def write_json_atomic(path, obj):
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(obj, fh, indent=2)
-    os.replace(tmp, path)
+    _replace_with_retry(tmp, path)
 
 
 def read_json(path, default=None):

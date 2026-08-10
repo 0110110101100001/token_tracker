@@ -46,6 +46,17 @@ def pid_path():
     return home() / "widget.pid"
 
 
+def widget_lock_path():
+    """The lock a running panel holds for its whole life.
+
+    Separate from lock_path(), which serialises tally runs against each other: a
+    panel holds this one continuously, so sharing the file would wedge every
+    Stop hook behind it. Separate from pid_path() as well, because the panel
+    writes that file and this one is only ever locked, never read.
+    """
+    return home() / "widget.lock"
+
+
 def log_path():
     return home() / "cost-meter.log"
 

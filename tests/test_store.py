@@ -259,6 +259,104 @@ class TestUpdateJsonLocked(unittest.TestCase):
         self.assertEqual(store.read_json(self.config), {"ceiling_5h_usd": 42.0})
 
 
+class TestReplaceWithRetry(unittest.TestCase):
+    """The rename at the end of every atomic write.
+
+    Regression test with a real cause: a Stop hook lost a refresh to
+    `PermissionError: [WinError 5]` from os.replace. On Windows the call fails
+    whenever anyone holds the destination open without FILE_SHARE_DELETE, which
+    is what the panel does every time it reads state.json, and what a virus
+    scanner does to the temp file. Both clear in milliseconds; the write used to
+    give up on the first one, and a lost write is what puts `! stale` on a panel
+    whose numbers were being updated the whole time.
+
+    The retry is Windows-only, so the tests drive `os.replace` directly rather
+    than racing a real reader -- that would only ever fail on one platform, and
+    only sometimes.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.target = self.tmp / "state.json"
+        self.real_replace = os.replace
+        self.addCleanup(setattr, os, "replace", self.real_replace)
+
+    def _failing_replace(self, failures):
+        """An os.replace that raises PermissionError its first `failures` calls."""
+        calls = {"n": 0}
+
+        def replace(src, dst):
+            calls["n"] += 1
+            if calls["n"] <= failures:
+                raise PermissionError(5, "Access is denied")
+            return self.real_replace(src, dst)
+
+        return replace, calls
+
+    @unittest.skipUnless(os.name == "nt", "the retry is Windows-only")
+    def test_a_transient_denial_is_retried(self):
+        replace, calls = self._failing_replace(failures=2)
+        os.replace = replace
+        store.write_json_atomic(self.target, {"today_usd": 1.5})
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(store.read_json(self.target), {"today_usd": 1.5})
+
+    @unittest.skipUnless(os.name == "nt", "the retry is Windows-only")
+    def test_a_permanent_denial_still_raises(self):
+        # A destination still busy after every attempt is not a race any more,
+        # and tally.py's caller logs it rather than pretending the write landed.
+        replace, calls = self._failing_replace(failures=99)
+        os.replace = replace
+        with self.assertRaises(PermissionError):
+            store.write_json_atomic(self.target, {"today_usd": 1.5})
+        self.assertEqual(calls["n"], 5)
+
+    @unittest.skipIf(os.name == "nt", "POSIX rename cannot fail this way")
+    def test_posix_does_not_retry(self):
+        replace, calls = self._failing_replace(failures=1)
+        os.replace = replace
+        with self.assertRaises(PermissionError):
+            store.write_json_atomic(self.target, {"today_usd": 1.5})
+        self.assertEqual(calls["n"], 1)
+
+
+class TestTryAcquire(unittest.TestCase):
+    """The lock a panel holds for its whole run, checked by the launcher."""
+
+    def setUp(self):
+        self.lock = Path(tempfile.mkdtemp()) / "widget.lock"
+
+    def test_an_uncontended_lock_is_granted(self):
+        handle = store.try_acquire(self.lock)
+        self.assertIsNotNone(handle)
+        store.release(handle)
+
+    def test_a_held_lock_is_refused(self):
+        # A subprocess rather than a second open() in this process, for the same
+        # reason _spawn_lock_holder exists: msvcrt's byte-range lock is
+        # re-entrant within one process on some paths, so only a genuinely
+        # separate process proves exclusion.
+        holder = _spawn_lock_holder(self.lock, hold_seconds=1.0)
+        try:
+            self.assertIsNone(store.try_acquire(self.lock))
+        finally:
+            _wait_for_holder(holder)
+
+    def test_releasing_lets_the_next_caller_in(self):
+        handle = store.try_acquire(self.lock)
+        store.release(handle)
+        second = store.try_acquire(self.lock)
+        self.assertIsNotNone(second)
+        store.release(second)
+
+    def test_the_directory_is_created_if_missing(self):
+        nested = self.lock.parent / "data" / "widget.lock"
+        handle = store.try_acquire(nested)
+        self.assertIsNotNone(handle)
+        store.release(handle)
+        self.assertTrue(nested.exists())
+
+
 class TestPaths(unittest.TestCase):
     def test_home_honours_env_override(self):
         from cost_meter import paths

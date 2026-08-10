@@ -371,12 +371,29 @@ def selftest(output):
     return 0
 
 
-def write_pid():
-    """Record our pid so cost_meter/launch.py can tell whether a panel is up.
+def claim_liveness_lock():
+    """Hold a lock for as long as this panel runs. Returns the handle, or None.
 
-    Process-name matching cannot do this job any more: under pixi the command
-    line is `.pixi/envs/default/bin/python widget.py`, so a pattern naming
-    python3 never matches and every session would start another panel.
+    This is what cost_meter/launch.py checks before starting a panel, and it
+    replaces asking the operating system whether the pid in widget.pid is still
+    alive. A pid cannot answer that question honestly on Windows, which reuses
+    the numbers: one unrelated process landing on a dead panel's number was
+    enough to suppress the launch in every session afterwards.
+
+    None means somebody else holds it — a panel started by hand alongside the
+    one already up. That is allowed; it simply is not the one whose exit frees
+    the lock.
+    """
+    return store.try_acquire(paths.widget_lock_path())
+
+
+def write_pid():
+    """Record our pid, so a panel that needs killing can be found.
+
+    Diagnostic only since the liveness claim moved to a lock. It is still worth
+    writing: `launch: already running (pid N)` in the log is only actionable
+    with the number in it, and a lock file's holder is not something the user
+    can look up.
     """
     path = paths.pid_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -388,8 +405,8 @@ def clear_pid():
 
     Checked rather than unlinked blindly: if this panel was killed with SIGKILL
     and a later one took over the file, that survivor's claim must outlive us.
-    A kill that skips this cleanup leaves the file behind, which is exactly why
-    the launcher probes the pid for liveness instead of trusting the file.
+    A kill that skips this cleanup leaves the file behind — harmless now that
+    the file is only a diagnostic, and the reason it stopped being more.
     """
     path = paths.pid_path()
     try:
@@ -406,17 +423,24 @@ def main():
                         help="render one frame to PNG and exit")
     args = parser.parse_args()
 
-    # A selftest is not a running panel, so it deliberately claims no pid file:
-    # writing one would make the launcher skip a real panel afterwards.
+    # A selftest is not a running panel, so it deliberately claims neither the
+    # lock nor the pid file: either would make the launcher skip a real panel
+    # afterwards.
     if args.selftest:
         return selftest(args.selftest)
 
     CostMeter().show_all()
+    # Taken before the pid is written and given back after it is removed, so
+    # there is no instant where a launcher can see the claim gone while this
+    # panel is still on screen.
+    handle = claim_liveness_lock()
     write_pid()
     try:
         Gtk.main()
     finally:
         clear_pid()
+        if handle is not None:
+            store.release(handle)
     return 0
 
 

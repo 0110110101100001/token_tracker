@@ -82,9 +82,20 @@ with your own path:
   {"hooks": [{"type": "command", "command": "<repo>/hooks/tally.sh", "timeout": 20}]}
 ],
 "SessionStart": [
-  {"hooks": [{"type": "command", "command": "<repo>/launch_widget.sh", "timeout": 10}]}
+  {
+    "matcher": "startup|resume|clear|compact",
+    "hooks": [{"type": "command", "command": "<repo>/launch_widget.sh", "timeout": 30}]
+  }
 ]
 ```
+
+The `matcher` is not decoration: a `SessionStart` group registered without one
+is not reliably run, and the symptom is indistinguishable from a broken panel —
+the hook writes nothing and exits 0 whatever happens. The 30-second budget is
+for the worst case rather than the normal one, which is about a second: the
+first run after a reboot pays for pixi starting, an interpreter booting and a
+virus scanner reading a few hundred megabytes of environment, and a hook killed
+on its timeout dies before it ever reaches the spawn.
 
 On Windows the very same entries name `hooks\tally.cmd` and
 `launch_widget.cmd`, because Claude Code runs the registered command directly
@@ -124,21 +135,40 @@ failing visibly. After editing `pixi.toml`, run `pixi install`.
 Start the panel by hand:
 
 ```bash
-pixi run widget       # in the foreground, useful when you want to see errors
+pixi run widget       # in the foreground
 pixi run launch       # detached, and only if one is not already up
 ```
+
+On Linux `pixi run widget` is also how you see the panel's errors. On Windows it
+is not — the task runs `pythonw`, which has nowhere to write them (see below);
+use `pixi run python widget.py` when you want the output.
 
 `pixi run launch` is what the SessionStart hook ends up running, through
 `launch_widget.sh` or `launch_widget.cmd`. `run_widget.sh` / `run_widget.cmd`
 start the panel in the foreground from outside the pixi environment, which is
 what an autostart entry wants.
 
+On Windows the panel runs under `pythonw.exe`, not `python.exe`. The hook spawns
+it detached, with no console to inherit, and Windows answers that by allocating
+a brand new console for any console-subsystem program — so `python` would leave
+a black window and a `conhost.exe` on screen beside the panel for its whole life.
+`pythonw` is the same interpreter built as a GUI-subsystem binary. The cost is
+that it discards stdout and stderr, which is why `pixi run widget --selftest`
+still goes through `python`.
+
 Stop it with right click → *Quit*.
 
-The panel records its own pid in `data/widget.pid`, and the launcher starts one
-only when that pid is absent or dead. So closing the panel keeps it closed for
-the rest of the session, and the next session brings it back. If you ever need
-to kill it from a shell, use that file rather than matching on the process name:
+A running panel holds an exclusive lock on `data/widget.lock` for as long as it
+lives, and the launcher starts one only when it can take that lock itself. So
+closing the panel keeps it closed for the rest of the session, and the next
+session brings it back. The lock rather than a pid, because the kernel retracts
+it however the panel dies: a pid file outlives a hard kill, and Windows will
+hand that same number to something else, which used to suppress the launch in
+every session afterwards.
+
+`data/widget.pid` is still written, now purely so a stuck panel can be found. If
+you ever need to kill it from a shell, use that file rather than matching on the
+process name:
 
 ```bash
 kill "$(cat data/widget.pid)"                             # Linux
@@ -262,11 +292,17 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   the 8-day prune window are dropped.
 - `config.json` — calibrated ceilings (`ceiling_5h_usd`, `ceiling_7d_usd`)
   and the widget's last window position.
-- `widget.pid` — the running panel's pid, so the launcher can tell
-  whether one is already up. A pid file left behind by a hard kill is detected
-  as dead and replaced.
-- `cost-meter.log` — where the `Stop` hook and `calibrate.py` log faults
-  that were swallowed to keep your critical path unbroken.
+- `widget.lock` — held exclusively by the running panel for as long as it
+  lives. This is how the launcher tells whether one is already up; the kernel
+  drops it however the panel dies, including a hard kill.
+- `widget.pid` — the running panel's pid, so a stuck one can be found and
+  killed. Diagnostic only: a pid cannot answer the liveness question honestly on
+  Windows, which reuses the numbers.
+- `cost-meter.log` — where the `Stop` hook, the `SessionStart` hook and
+  `calibrate.py` record what they swallowed to keep your critical path
+  unbroken. The launcher also logs the boring outcomes (`launch: spawned`,
+  `launch: already running`), because a hook that ran and decided to do nothing
+  and a hook that never ran are otherwise indistinguishable.
 
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
@@ -310,12 +346,21 @@ platforms run the same check rather than a pair of twins that can drift.
   so under plain Wayland the panel can end up running with no visible effect.
   There is no such setting on Windows and none is wanted: GDK's only backend
   there is win32, and forcing x11 would leave the panel no display to open.
-- **Nothing happens at session start** — the launcher exits 0 silently on every
-  failure path, deliberately. Run `pixi run launch` by hand, where it cannot
-  hide, and check `data/widget.pid`: a live pid in there means it decided a
-  panel was already up.
-  On Windows the usual cause is `pixi` not being on `PATH` for the hook,
+- **Nothing happens at session start** — read `data/cost-meter.log` first. The
+  launcher exits 0 and prints nothing whatever happens, deliberately, so the log
+  is the only place that distinguishes the three cases: `launch: spawned` (it
+  started something, and the problem is further along), `launch: already
+  running` (it decided a panel was up), and `launch: failed` with the exception.
+  **No line at all means the hook never ran** — check that `SessionStart` in
+  `~/.claude/settings.json` carries its `matcher`, and re-run
+  `pixi run install-hooks` if it does not.
+  On Windows the other usual cause is `pixi` not being on `PATH` for the hook,
   because Claude Code was started before pixi was installed and a `PATH` change
-  does not reach a running process. Restart Claude Code. You can tell this apart
-  from every other cause by how fast it fails: the wrapper returns in well under
-  a second, having never reached pixi at all.
+  does not reach a running process. Restart Claude Code. That one also leaves no
+  log line, and you can tell the two apart by running the wrapper by hand:
+  `launch_widget.cmd` writes a line if it reaches Python, and returns in well
+  under a second without one if it never found pixi.
+- **A black console window next to the panel, on Windows** — the panel is being
+  run by `python.exe` instead of `pythonw.exe`. Check the `widget` task under
+  `[target.win-64.tasks]` in `pixi.toml`. A detached process has no console to
+  inherit, and Windows gives any console-subsystem program one of its own.

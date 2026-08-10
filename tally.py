@@ -11,21 +11,11 @@ import time
 import traceback
 
 from cost_meter import paths, store
+from cost_meter.log import write as _log
 from cost_meter.parser import scan
 from cost_meter.pricing import load_pricing
 from cost_meter.store import PRUNE_DAYS
 from cost_meter.summary import build_state, new_turn_ids, prune_marks
-
-
-def _log(message):
-    try:
-        path = paths.log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(f"{stamp} {message}\n")
-    except Exception:
-        pass
 
 
 def _safe_log(message):

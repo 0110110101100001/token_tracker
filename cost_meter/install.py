@@ -25,18 +25,29 @@ from . import paths, store
 
 IS_WINDOWS = os.name == "nt"
 
-# Every hook this tool owns: the settings event, the script, and the timeout.
-# The Stop hook's budget is generous because it is bounded by real work (a full
-# rescan of the transcripts is well under a second); SessionStart only has to
-# check a pid and spawn.
+# Every hook this tool owns: the settings event, the script, the timeout, and
+# the matcher (None where the event has no notion of one).
+#
+# SessionStart's matcher is spelled out rather than left off. Claude Code's own
+# plugins register theirs the same way, and a SessionStart group with no matcher
+# is not reliably run -- which looks exactly like a panel that will not start,
+# because the hook writes nothing and exits 0 by design.
+#
+# The timeouts are budgets for the worst case, not the normal one. SessionStart
+# only has to take a lock and spawn, about a second warm, but its first run
+# after a reboot pays for pixi starting, an interpreter booting and a virus
+# scanner reading several hundred megabytes of environment -- and a hook killed
+# on the timeout dies before it ever reaches the spawn. Stop's is bounded by
+# real work: a full rescan of the transcripts is well under a second.
 #
 # The wrappers differ by platform because Claude Code runs the registered
 # command directly: a .sh is not executable on Windows and a .cmd is not on
 # Linux. What they wrap is identical -- the same two pixi tasks.
 _SUFFIX = ".cmd" if IS_WINDOWS else ".sh"
 HOOKS = (
-    ("Stop", Path("hooks") / ("tally" + _SUFFIX), 20),
-    ("SessionStart", Path("launch_widget" + _SUFFIX), 10),
+    ("Stop", Path("hooks") / ("tally" + _SUFFIX), 20, None),
+    ("SessionStart", Path("launch_widget" + _SUFFIX), 30,
+     "startup|resume|clear|compact"),
 )
 
 AUTOSTART_NAME = ("claude-cost-meter.cmd" if IS_WINDOWS
@@ -132,12 +143,13 @@ def _strip_ours(settings, root, events):
 
 def plan(root):
     """The commands we would register, in settings order."""
-    return [(event, str(root / script), timeout) for event, script, timeout in HOOKS]
+    return [(event, str(root / script), timeout, matcher)
+            for event, script, timeout, matcher in HOOKS]
 
 
 def apply(settings, root, uninstall=False):
     """Rewrite `settings` in place. Returns a list of human-readable changes."""
-    events = [event for event, _, _ in HOOKS]
+    events = [event for event, _, _, _ in HOOKS]
     removed = _strip_ours(settings, root, events)
     changes = []
     if removed:
@@ -149,16 +161,21 @@ def apply(settings, root, uninstall=False):
         return changes
 
     hooks = settings.setdefault("hooks", {})
-    for event, command, timeout in plan(root):
+    for event, command, timeout, matcher in plan(root):
         groups = hooks.setdefault(event, [])
         if not isinstance(groups, list):
             raise SystemExit(
                 f"{event} in settings.json is a {type(groups).__name__}, not a list; "
                 "fix it by hand and re-run"
             )
-        groups.append({"hooks": [{"type": "command",
-                                  "command": command,
-                                  "timeout": timeout}]})
+        group = {"hooks": [{"type": "command",
+                            "command": command,
+                            "timeout": timeout}]}
+        if matcher is not None:
+            # Before the group, so the file reads the way Claude Code's own
+            # documentation writes it.
+            group = {"matcher": matcher, **group}
+        groups.append(group)
         changes.append(f"registered {event} -> {command}")
     return changes
 

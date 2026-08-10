@@ -77,4 +77,14 @@ widget = { cmd = "python widget.py", env = { GDK_BACKEND = "x11" } }
 [target.win-64.tasks]
 # The same panel, with no GDK_BACKEND override. GDK's only backend here is
 # win32; forcing x11 would leave the panel with no display to open at all.
-widget = "python widget.py"
+#
+# pythonw, not python, and this is load-bearing rather than tidiness. The
+# SessionStart hook spawns the panel with DETACHED_PROCESS, which gives it no
+# console to inherit -- and Windows answers that by allocating a brand new
+# console for any console-subsystem program, so `python` would put a black
+# window and a conhost.exe on screen beside the panel for its whole life.
+# pythonw is the same interpreter built as a GUI-subsystem binary, so there is
+# nothing for Windows to allocate. It also discards stdout and stderr, which
+# costs nothing here: widget.py's only diagnostic path is --selftest, and
+# smoke.py runs that through sys.executable rather than through this task.
+widget = "pythonw widget.py"

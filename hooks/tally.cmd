@@ -18,6 +18,12 @@ REM `! stale <age>`.
 
 cd /d "%~dp0.." || exit /b 0
 
+REM Same PATH repair as launch_widget.cmd, for the same reason: a Claude Code
+REM session started from a terminal that predates the pixi install inherits a
+REM PATH without it, and this hook would then quietly do nothing after every
+REM turn. A no-op when pixi is already found.
+where pixi >nul 2>&1 || set "PATH=%USERPROFILE%\.pixi\bin;%PATH%"
+
 REM --frozen: use the environment exactly as pixi.lock describes it. No solving,
 REM no network, no surprise install latency on a hook that runs after every turn.
 pixi run --frozen tally >nul 2>&1
