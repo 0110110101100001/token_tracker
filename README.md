@@ -204,6 +204,15 @@ applies and the two numbers need editing by hand. Nothing in the tool tracks
 this — there is deliberately no dated-override mechanism, so the table says
 what you tell it and the calendar is yours to watch.
 
+The lookup is an **exact string match** against whatever the transcript
+records — there is no alias resolution, and none is wanted: guessing that
+`claude-haiku-4-5-20251001` means the same thing as `claude-haiku-4-5` is
+exactly the kind of inference that would silently misprice a model one day.
+Claude Code is not consistent about which form it writes, which is why Haiku
+4.5 appears twice at the same published rate: the dated id is what the
+transcripts carry today, and the bare alias is there so the panel keeps
+pricing it rather than falling back to a `?` if that ever changes.
+
 A model that has no entry in this table is **never** treated as free. It is
 excluded from the priced totals and instead surfaces as a `?` warning row on
 the panel, so a pricing gap is visible rather than silently undercounting
