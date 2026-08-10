@@ -1,0 +1,12 @@
+# Line endings are load-bearing for both families of entry point, and this repo
+# is now checked out on Windows as well as Linux -- where core.autocrlf would
+# otherwise decide, per machine, and get one of them wrong.
+#
+# bash fails on a CRLF shebang line with a bare `\r: command not found`, which
+# is exactly the sort of error that reads as "the tool is broken" rather than
+# "the file has the wrong newlines".
+*.sh text eol=lf
+
+# cmd.exe is unreliable on LF-only batch files, so the Windows wrappers get the
+# newlines Windows expects.
+*.cmd text eol=crlf

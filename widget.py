@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Always-on-top cost meter, anchored bottom-right.
 
-Reads data/state.json and nothing else. Run it through run_widget.sh, which
-sets GDK_BACKEND=x11 so the window can place and raise itself.
+Reads data/state.json and nothing else. Run it through run_widget.sh or
+run_widget.cmd, which enter the pixi environment; on Linux that sets
+GDK_BACKEND=x11 so the window can place and raise itself.
 """
 
 import argparse
@@ -371,7 +372,7 @@ def selftest(output):
 
 
 def write_pid():
-    """Record our pid so launch_widget.sh can tell whether a panel is up.
+    """Record our pid so cost_meter/launch.py can tell whether a panel is up.
 
     Process-name matching cannot do this job any more: under pixi the command
     line is `.pixi/envs/default/bin/python widget.py`, so a pattern naming

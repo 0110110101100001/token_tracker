@@ -37,11 +37,15 @@ prices each assistant message, and keeps a rolling ledger of the result.
 
 ## Requirements
 
-- **Linux with a graphical session.** The panel has to position itself in a
-  corner and raise itself above other windows, which a pure Wayland client may
-  not do — so it runs as an X11 client, under Xorg or XWayland. There is no
-  macOS or Windows support: `cost_meter/store.py` locks with `fcntl`, which is
-  POSIX-only, and the panel's placement is X11-specific.
+- **Linux or Windows, with a graphical session.**
+  - On **Linux** the panel runs as an X11 client, under Xorg or XWayland. It
+    has to position itself in a corner and raise itself above other windows,
+    which a pure Wayland client may not do.
+  - On **Windows** (10 or newer, 64-bit) it runs on GDK's win32 backend, which
+    needs no such coaxing.
+  - There is **no macOS support**. Nothing here is hostile to it any more —
+    the file lock is portable and the entry points are Python — but no `osx-*`
+    platform has been solved or smoke-tested, so it is not claimed.
 - **[pixi](https://pixi.sh).** It supplies everything else, including Python
   and the GTK 3 bindings. Nothing has to be installed system-wide — in
   particular you do **not** need a distribution's `python3-gi`.
@@ -55,6 +59,14 @@ pixi install                # solve and fetch Python + GTK 3 (a few hundred MB)
 pixi run install-hooks      # register the two hooks in ~/.claude/settings.json
 pixi run smoke              # prove it works before relying on it
 ```
+
+Those four commands are the same on Linux and Windows.
+
+**On Windows, restart Claude Code after installing pixi** — before the hooks
+can run `pixi`, it has to be on `PATH`, and a `PATH` change does not reach
+processes that were already running when it was made. Skipping this is the one
+failure that looks like nothing happening at all: the hooks run, find no `pixi`,
+and exit 0 exactly as they are designed to.
 
 Then start a new Claude Code session. The panel comes up on its own, and the
 numbers start moving after your first assistant turn.
@@ -74,12 +86,23 @@ with your own path:
 ]
 ```
 
+On Windows the very same entries name `hooks\tally.cmd` and
+`launch_widget.cmd`, because Claude Code runs the registered command directly
+and a `.sh` is not executable there. The installer picks the pair that matches
+the platform it is run on; what the two wrap is identical, being the same pixi
+tasks.
+
 Two flags worth knowing:
 
 ```bash
 ./install.sh --autostart    # also start the panel on login, not just per session
 ./install.sh --uninstall    # remove both hooks and the autostart entry again
 ```
+
+On Windows that is `install.cmd --autostart` and `install.cmd --uninstall`.
+`--autostart` writes an XDG `.desktop` entry on Linux and a `.cmd` in your
+Startup folder on Windows; `--uninstall` removes it again, but only after
+reading it back and confirming it launches *this* checkout.
 
 If you move or rename the repo, re-run `pixi run install-hooks`. It recognises
 its own stale entries and replaces them, which matters: two live `Stop` hooks
@@ -102,26 +125,39 @@ Start the panel by hand:
 
 ```bash
 pixi run widget       # in the foreground, useful when you want to see errors
-./run_widget.sh &     # detached; this is what the SessionStart hook runs
+pixi run launch       # detached, and only if one is not already up
 ```
+
+`pixi run launch` is what the SessionStart hook ends up running, through
+`launch_widget.sh` or `launch_widget.cmd`. `run_widget.sh` / `run_widget.cmd`
+start the panel in the foreground from outside the pixi environment, which is
+what an autostart entry wants.
 
 Stop it with right click → *Quit*.
 
-The panel records its own pid in `data/widget.pid`, and `launch_widget.sh` starts
-one only when that pid is absent or dead. So closing the panel keeps it closed
-for the rest of the session, and the next session brings it back. If you ever
-need to kill it from a shell, use that file rather than matching on the process
-name:
+The panel records its own pid in `data/widget.pid`, and the launcher starts one
+only when that pid is absent or dead. So closing the panel keeps it closed for
+the rest of the session, and the next session brings it back. If you ever need
+to kill it from a shell, use that file rather than matching on the process name:
 
 ```bash
-kill "$(cat data/widget.pid)"
+kill "$(cat data/widget.pid)"                             # Linux
+```
+```powershell
+Stop-Process -Id (Get-Content data\widget.pid).Trim()     # Windows
 ```
 
 Force a recount without waiting for a turn to finish:
 
 ```bash
-pixi run tally < /dev/null
+pixi run tally < /dev/null    # Linux
 ```
+```powershell
+$null | pixi run tally        # Windows
+```
+
+Either way the point is the same: `tally` reads the hook payload from stdin, so
+it must be given one that ends rather than a terminal it will wait on.
 
 ## Calibration
 
@@ -217,7 +253,7 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   the 8-day prune window are dropped.
 - `config.json` — calibrated ceilings (`ceiling_5h_usd`, `ceiling_7d_usd`)
   and the widget's last window position.
-- `widget.pid` — the running panel's pid, so `launch_widget.sh` can tell
+- `widget.pid` — the running panel's pid, so the launcher can tell
   whether one is already up. A pid file left behind by a hard kill is detected
   as dead and replaced.
 - `cost-meter.log` — where the `Stop` hook and `calibrate.py` log faults
@@ -239,9 +275,13 @@ pixi run smoke    # tests, a real GTK render, and the fault-logging check
 ```
 
 `pixi run smoke` skips the render step, out loud, when there is no display, so
-it stays usable over SSH. `xvfb-run ./smoke.sh` exercises it anyway, using your
-distribution's Xvfb — conda-forge has no Xvfb package, so it is not one of this
-project's dependencies.
+it stays usable over SSH. `xvfb-run pixi run smoke` exercises it anyway, using
+your distribution's Xvfb — conda-forge has no Xvfb package, so it is not one of
+this project's dependencies. On Windows there is always a display, so the step
+always runs.
+
+Both tasks are Python (`run_tests.py`, `smoke.py`) rather than shell, so the two
+platforms run the same check rather than a pair of twins that can drift.
 
 ## Troubleshooting
 
@@ -250,15 +290,23 @@ project's dependencies.
   37 min`). Check `data/cost-meter.log`. Every fault on the `Stop` hook's
   critical path is caught and logged there rather than shown, by design, so a
   stuck panel almost always has a line waiting there. If the log is empty, the
-  hook is not reaching Python at all: run `hooks/tally.sh` by hand and check
-  that `pixi run --frozen tally` works from the repo.
+  hook is not reaching Python at all: run `hooks/tally.sh` (or `hooks\tally.cmd`)
+  by hand and check that `pixi run --frozen tally` works from the repo.
 - **Numbers look lower than expected** — check the panel for a `?` warning
   row. It means at least one model you used has no entry in `pricing.json`
   and is being excluded from the totals rather than counted as zero.
-- **The panel is invisible** — confirm the pixi `widget` task's
+- **The panel is invisible, on Linux** — confirm the pixi `widget` task's
   `GDK_BACKEND=x11` took effect and you are on Xorg or XWayland. A pure Wayland
   client cannot position itself in a corner or raise itself above other windows,
   so under plain Wayland the panel can end up running with no visible effect.
-- **Nothing happens at session start** — `launch_widget.sh` exits 0 silently on
-  every failure path, deliberately. Run it by hand and check `data/widget.pid`:
-  a live pid in there means it decided a panel was already up.
+  There is no such setting on Windows and none is wanted: GDK's only backend
+  there is win32, and forcing x11 would leave the panel no display to open.
+- **Nothing happens at session start** — the launcher exits 0 silently on every
+  failure path, deliberately. Run `pixi run launch` by hand, where it cannot
+  hide, and check `data/widget.pid`: a live pid in there means it decided a
+  panel was already up.
+  On Windows the usual cause is `pixi` not being on `PATH` for the hook,
+  because Claude Code was started before pixi was installed and a `PATH` change
+  does not reach a running process. Restart Claude Code. You can tell this apart
+  from every other cause by how fast it fails: the wrapper returns in well under
+  a second, having never reached pixi at all.

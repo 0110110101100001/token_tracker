@@ -1,17 +1,46 @@
 # cost_meter/store.py
 """Append-only event log, atomic JSON writes, and the cross-process lock."""
 
-import fcntl
 import json
 import os
 import time
 from contextlib import contextmanager
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 PRUNE_DAYS = 8
 
 
 class LockTimeout(Exception):
     """Raised when another run holds the lock longer than we are willing to wait."""
+
+
+def _try_lock(handle):
+    """Take the lock without blocking. Raises OSError when somebody holds it.
+
+    Both platforms raise OSError on contention -- `flock(LOCK_NB)` and
+    `LK_NBLCK` agree on that much -- which is what lets one retry loop serve
+    them both.
+    """
+    if os.name == "nt":
+        # msvcrt locks a byte range starting at the current file position, not
+        # the whole file. Without the seek, a second acquisition would lock a
+        # different byte and exclude nothing at all.
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock(handle):
+    if os.name == "nt":
+        handle.seek(0)  # release the same byte _try_lock took
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 @contextmanager
@@ -23,12 +52,16 @@ def exclusive_lock(path, timeout=10.0, poll=0.1):
     leaves the previous state in place.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(path, "w", encoding="utf-8")
+    # Opened "a+" rather than "w": Windows refuses to truncate a file another
+    # process holds a byte-range lock on, so "w" would fail exactly when the
+    # lock is doing its job. Nothing ever reads or writes the contents, and on
+    # POSIX the two modes are indistinguishable here.
+    handle = open(path, "a+", encoding="utf-8")
     deadline = time.monotonic() + timeout
     try:
         while True:
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _try_lock(handle)
                 break
             except OSError:
                 if time.monotonic() >= deadline:
@@ -37,7 +70,7 @@ def exclusive_lock(path, timeout=10.0, poll=0.1):
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            _unlock(handle)
     finally:
         handle.close()
 
