@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
 # Full check: unit tests against throwaway data, then a GTK render, then a
 # proof that a genuine failure is logged rather than escaping.
+#
+# Everything runs through `pixi run --frozen`, so this checks the environment a
+# new machine actually gets from pixi.lock -- not whatever happens to be
+# installed system-wide.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "== unit tests =="
-COST_METER_HOME="$(mktemp -d)" python3 -m unittest discover -s tests -v
+COST_METER_HOME="$(mktemp -d)" pixi run --frozen python -m unittest discover -s tests -v
 
 echo
 echo "== widget selftest =="
-png="$(mktemp --suffix=.png)"
-GDK_BACKEND=x11 python3 widget.py --selftest "$png"
-test -s "$png"
-rm -f "$png"
+# GTK needs a display even to render off-screen, so on a headless box this step
+# cannot run. It is skipped out loud rather than silently passing: a green smoke
+# run that never drew anything would be the more expensive lie. `xvfb-run
+# ./smoke.sh` exercises it without a desktop, using your distribution's Xvfb --
+# conda-forge has no Xvfb package, so it is not a dependency of this project.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ]; then
+    echo "skipped: no display (DISPLAY and WAYLAND_DISPLAY are both unset)"
+else
+    png="$(mktemp --suffix=.png)"
+    pixi run --frozen python widget.py --selftest "$png"
+    test -s "$png"
+    rm -f "$png"
+fi
 
 echo
 echo "== tally survives a genuine fault =="
@@ -28,7 +41,7 @@ home="$(mktemp -d)"
 trap 'mv -f pricing.json.smoke-hidden pricing.json 2>/dev/null || true' EXIT
 mv pricing.json pricing.json.smoke-hidden
 set +e
-COST_METER_HOME="$home" ./tally.py < /dev/null
+COST_METER_HOME="$home" pixi run --frozen tally < /dev/null
 code=$?
 set -e
 mv pricing.json.smoke-hidden pricing.json

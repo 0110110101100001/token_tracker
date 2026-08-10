@@ -5,9 +5,9 @@ Limit state is not stored locally, so it cannot be read — only estimated.
 Consumption is measured in USD-equivalent rather than tokens, because Opus
 draws harder on the limit than Sonnet and pricing weights the models for free.
 
-Usage:
-    ./calibrate.py --5h 62      # /usage reported 62% for the 5-hour window
-    ./calibrate.py --week 31    # /usage reported 31% for the week
+Usage (the bare -- keeps pixi from reading --5h as one of its own flags):
+    pixi run calibrate -- --5h 62      # /usage reported 62% for the 5-hour window
+    pixi run calibrate -- --week 31    # /usage reported 31% for the week
 """
 
 import argparse

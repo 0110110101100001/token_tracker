@@ -35,72 +35,92 @@ Cost is computed from the same token counts Claude Code already writes to
 its own transcript files under `~/.claude/projects/`; the tool reads those,
 prices each assistant message, and keeps a rolling ledger of the result.
 
+## Requirements
+
+- **Linux with a graphical session.** The panel has to position itself in a
+  corner and raise itself above other windows, which a pure Wayland client may
+  not do — so it runs as an X11 client, under Xorg or XWayland. There is no
+  macOS or Windows support: `cost_meter/store.py` locks with `fcntl`, which is
+  POSIX-only, and the panel's placement is X11-specific.
+- **[pixi](https://pixi.sh).** It supplies everything else, including Python
+  and the GTK 3 bindings. Nothing has to be installed system-wide — in
+  particular you do **not** need a distribution's `python3-gi`.
+- **Claude Code**, since the whole input is its transcripts.
+
 ## Install
 
-1. Register the `Stop` hook in `~/.claude/settings.json`, alongside any hooks
-   you already have:
+```bash
+git clone <this repo> && cd token_calculator
+pixi install                # solve and fetch Python + GTK 3 (a few hundred MB)
+pixi run install-hooks      # register the two hooks in ~/.claude/settings.json
+pixi run smoke              # prove it works before relying on it
+```
 
-   ```json
-   "Stop": [
-     {
-       "hooks": [
-         {"type": "command", "command": "/home/martin/Desktop/token_calculator/tally.py", "timeout": 20}
-       ]
-     }
-   ]
-   ```
+Then start a new Claude Code session. The panel comes up on its own, and the
+numbers start moving after your first assistant turn.
 
-2. Register the `SessionStart` hook in the same file, so the panel comes up
-   whenever a Claude Code session starts and is not already running:
+`install-hooks` edits `~/.claude/settings.json` for you because the hooks must
+be registered by absolute path, which is the one thing that cannot be committed
+to the repo — it differs on every machine. It backs the file up first, merges
+rather than replacing, and is safe to run twice. The result looks like this,
+with your own path:
 
-   ```json
-   "SessionStart": [
-     {
-       "hooks": [
-         {"type": "command", "command": "/home/martin/Desktop/token_calculator/launch_widget.sh", "timeout": 10}
-       ]
-     }
-   ]
-   ```
+```json
+"Stop": [
+  {"hooks": [{"type": "command", "command": "<repo>/hooks/tally.sh", "timeout": 20}]}
+],
+"SessionStart": [
+  {"hooks": [{"type": "command", "command": "<repo>/launch_widget.sh", "timeout": 10}]}
+]
+```
 
-3. To have the panel start on login as well, an autostart entry at
-   `~/.config/autostart/claude-cost-meter.desktop` handles it — it is not part
-   of this repo, so it survives a fresh checkout and is created once,
-   separately, on the machine that runs the panel.
+Two flags worth knowing:
+
+```bash
+./install.sh --autostart    # also start the panel on login, not just per session
+./install.sh --uninstall    # remove both hooks and the autostart entry again
+```
+
+If you move or rename the repo, re-run `pixi run install-hooks`. It recognises
+its own stale entries and replaces them, which matters: two live `Stop` hooks
+would both run, and the second would find no new messages and overwrite
+**last turn** with `$0.00`.
 
 ## Starting and stopping
 
-The two halves are independent: the hook keeps counting whether or not the
-panel is on screen, and the panel keeps rendering whether or not the hook is
-registered (it marks itself stale after ten minutes without an update).
+The two halves are independent of each other: the hook keeps counting whether or
+not the panel is on screen, and the panel keeps rendering whether or not the
+hook is registered (it marks itself stale after ten minutes without an update).
+
+Both do, however, need the pixi environment — every entry point runs through
+`pixi run --frozen`, which uses `pixi.lock` exactly as committed and never
+touches the network. If the environment is missing or out of date, the hook
+stops producing numbers and the panel says so with its `! stale` row rather than
+failing visibly. After editing `pixi.toml`, run `pixi install`.
 
 Start the panel by hand:
 
 ```bash
-setsid ./run_widget.sh >/dev/null 2>&1 </dev/null &
+pixi run widget       # in the foreground, useful when you want to see errors
+./run_widget.sh &     # detached; this is what the SessionStart hook runs
 ```
 
-`setsid` matters. Without it the panel is a child of whatever shell launched
-it and dies when that shell does — which is why launching it from inside a
-Claude Code tool call does not stick.
+Stop it with right click → *Quit*.
 
-Stop it with right click → *Quit*, or:
+The panel records its own pid in `data/widget.pid`, and `launch_widget.sh` starts
+one only when that pid is absent or dead. So closing the panel keeps it closed
+for the rest of the session, and the next session brings it back. If you ever
+need to kill it from a shell, use that file rather than matching on the process
+name:
 
 ```bash
-pkill -x -f "python3 widget.py"
+kill "$(cat data/widget.pid)"
 ```
-
-The `-x` is not optional. `pkill -f "widget.py"` matches any process whose
-command line merely *contains* that text — including the shell you typed the
-command into, which then kills your own terminal.
-
-Closing the panel keeps it closed for the rest of the session; `launch_widget.sh`
-only starts one if none is running, so the next session brings it back.
 
 Force a recount without waiting for a turn to finish:
 
 ```bash
-./tally.py < /dev/null
+pixi run tally < /dev/null
 ```
 
 ## Calibration
@@ -119,9 +139,11 @@ To calibrate:
 2. Feed those percentages back in:
 
    ```bash
-   ./calibrate.py --5h <pct>
-   ./calibrate.py --week <pct>
+   pixi run calibrate -- --5h <pct>
+   pixi run calibrate -- --week <pct>
    ```
+
+   The bare `--` matters: without it pixi reads `--5h` as one of its own flags.
 
    Each flag derives a ceiling from your currently-recorded spend divided by
    the reported percentage, and stores it in `data/config.json`. From then
@@ -157,14 +179,21 @@ your spend.
   was built for is on a subscription, not pay-per-token API billing — the
   dollar figures are a consistent way to compare and weight usage, not a
   bill you will actually receive.
-- **Fast mode is not recorded in the transcripts.** A turn run in fast mode
-  is not distinguishable from a normal turn in the data this tool reads, so
-  it would be understated by roughly half. Fast mode is not currently in
-  use, so this has no effect today, but it would if that changed.
+- **Fast mode is priced as though it were standard.** The transcripts do record
+  which speed served each message, in `usage.speed`, but nothing here reads that
+  field and `pricing.json` carries no fast-mode rates. Since Opus 5 fast mode
+  costs $10.00 / $50.00 against the standard $5.00 / $25.00, a fast turn would
+  be understated by half. Fast mode is not currently in use — every record in
+  the transcripts reads `standard` — so this costs nothing today, but it would
+  if that changed.
 - **The weekly row is a rolling 7 days**, not the fixed weekly window the
   real subscription limit resets on. This reads slightly pessimistic:
   the tool's week can include a leading tail of usage the real limit has
   already reset past.
+- **Server-side tool use is not counted.** Web search is billed per thousand
+  searches rather than per token, and those counts (`usage.server_tool_use`)
+  are ignored. They are zero across every transcript on the machine this was
+  built for.
 - **`/usage` remains the authoritative source for limit state.** Everything
   this tool shows for the 5h and week windows is an estimate calibrated
   against your own reported spend, not a read of the real limit.
@@ -188,16 +217,31 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   the 8-day prune window are dropped.
 - `config.json` — calibrated ceilings (`ceiling_5h_usd`, `ceiling_7d_usd`)
   and the widget's last window position.
+- `widget.pid` — the running panel's pid, so `launch_widget.sh` can tell
+  whether one is already up. A pid file left behind by a hard kill is detected
+  as dead and replaced.
 - `cost-meter.log` — where the `Stop` hook and `calibrate.py` log faults
   that were swallowed to keep your critical path unbroken.
 
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
 `~/.claude/projects/` from scratch. You lose your calibrated ceilings and
-the saved window position, nothing else — re-run `calibrate.py` to get the
+the saved window position, nothing else — re-run calibration to get the
 percentages back. With the bookmarks gone too, the first turn after a reset
 reads as the whole session's cost, since there is no earlier mark to measure
 from; it corrects itself on the next turn.
+
+## Development
+
+```bash
+pixi run test     # unit tests only, against a throwaway data directory
+pixi run smoke    # tests, a real GTK render, and the fault-logging check
+```
+
+`pixi run smoke` skips the render step, out loud, when there is no display, so
+it stays usable over SSH. `xvfb-run ./smoke.sh` exercises it anyway, using your
+distribution's Xvfb — conda-forge has no Xvfb package, so it is not one of this
+project's dependencies.
 
 ## Troubleshooting
 
@@ -205,12 +249,16 @@ from; it corrects itself on the next turn.
   greys out and the warning row shows how long it has been (`! stale 1 h
   37 min`). Check `data/cost-meter.log`. Every fault on the `Stop` hook's
   critical path is caught and logged there rather than shown, by design, so a
-  stuck panel almost always has a line waiting there.
+  stuck panel almost always has a line waiting there. If the log is empty, the
+  hook is not reaching Python at all: run `hooks/tally.sh` by hand and check
+  that `pixi run --frozen tally` works from the repo.
 - **Numbers look lower than expected** — check the panel for a `?` warning
   row. It means at least one model you used has no entry in `pricing.json`
   and is being excluded from the totals rather than counted as zero.
-- **The panel is invisible** — confirm it is actually running under XWayland
-  (`GDK_BACKEND=x11`, which `run_widget.sh` sets for you). A pure Wayland
-  client cannot position itself in a corner or raise itself above other
-  windows, so under plain Wayland the panel can end up running with no
-  visible effect.
+- **The panel is invisible** — confirm the pixi `widget` task's
+  `GDK_BACKEND=x11` took effect and you are on Xorg or XWayland. A pure Wayland
+  client cannot position itself in a corner or raise itself above other windows,
+  so under plain Wayland the panel can end up running with no visible effect.
+- **Nothing happens at session start** — `launch_widget.sh` exits 0 silently on
+  every failure path, deliberately. Run it by hand and check `data/widget.pid`:
+  a live pid in there means it decided a panel was already up.

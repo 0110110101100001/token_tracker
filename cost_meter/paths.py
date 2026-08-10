@@ -42,6 +42,10 @@ def lock_path():
     return home() / "tally.lock"
 
 
+def pid_path():
+    return home() / "widget.pid"
+
+
 def log_path():
     return home() / "cost-meter.log"
 

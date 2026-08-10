@@ -6,6 +6,7 @@ sets GDK_BACKEND=x11 so the window can place and raise itself.
 """
 
 import argparse
+import os
 import sys
 import time
 
@@ -369,17 +370,52 @@ def selftest(output):
     return 0
 
 
+def write_pid():
+    """Record our pid so launch_widget.sh can tell whether a panel is up.
+
+    Process-name matching cannot do this job any more: under pixi the command
+    line is `.pixi/envs/default/bin/python widget.py`, so a pattern naming
+    python3 never matches and every session would start another panel.
+    """
+    path = paths.pid_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+
+def clear_pid():
+    """Remove the pid file, but only while it is still ours.
+
+    Checked rather than unlinked blindly: if this panel was killed with SIGKILL
+    and a later one took over the file, that survivor's claim must outlive us.
+    A kill that skips this cleanup leaves the file behind, which is exactly why
+    the launcher probes the pid for liveness instead of trusting the file.
+    """
+    path = paths.pid_path()
+    try:
+        if int(path.read_text(encoding="utf-8").strip()) != os.getpid():
+            return
+        path.unlink()
+    except (OSError, ValueError):
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selftest", metavar="PNG",
                         help="render one frame to PNG and exit")
     args = parser.parse_args()
 
+    # A selftest is not a running panel, so it deliberately claims no pid file:
+    # writing one would make the launcher skip a real panel afterwards.
     if args.selftest:
         return selftest(args.selftest)
 
     CostMeter().show_all()
-    Gtk.main()
+    write_pid()
+    try:
+        Gtk.main()
+    finally:
+        clear_pid()
     return 0
 
 

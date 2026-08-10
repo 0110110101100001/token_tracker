@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Run the widget as an X11 client under XWayland.
+# Start the panel from outside the pixi environment.
 #
-# A Wayland client may not position itself or raise itself above others, which
-# is exactly what this widget needs. Under XWayland both work normally.
+# This is the entry point for anything that is not already inside pixi: the
+# SessionStart hook via launch_widget.sh, an autostart entry, or a shell. It
+# adds nothing but the environment -- GDK_BACKEND=x11 belongs to the `widget`
+# task in pixi.toml, so the task and this script cannot drift apart.
+#
+# --frozen installs nothing and never touches the network: the environment is
+# used exactly as pixi.lock describes it, or the run fails. Re-run `pixi install`
+# after editing pixi.toml.
 set -euo pipefail
 cd "$(dirname "$0")"
-export GDK_BACKEND=x11
-exec python3 widget.py "$@"
+exec pixi run --frozen widget "$@"

@@ -1,0 +1,63 @@
+# Environment for the Claude cost meter.
+#
+# Only widget.py needs anything from here: it imports gi (PyGObject) and
+# requires GTK 3. Everything else -- tally.py, calibrate.py, cost_meter/ and the
+# tests -- is standard library only. The environment still owns every entry
+# point anyway, so there is exactly one interpreter to reason about and the
+# documented commands are identical on every machine.
+
+[workspace]
+name = "token-calculator"
+version = "0.1.0"
+description = "Always-on-top GTK panel showing what Claude Code work costs"
+channels = ["conda-forge"]
+# linux-64 only, and deliberately so: the panel needs X11 or XWayland to place
+# and raise itself above other windows, and cost_meter/store.py locks with
+# fcntl, so none of this would work on Windows. Adding linux-aarch64 is a
+# one-line change once somebody has actually solved and smoke-tested it there.
+platforms = ["linux-64"]
+
+[dependencies]
+# The interpreter the project was developed against, and the version pygobject
+# publishes py314 builds for.
+python = "3.14.*"
+pygobject = ">=3.56"
+gtk3 = ">=3.24"
+# GTK 3 needs these at runtime, not merely to build against: without the
+# settings schemas it fails looking up org.gtk.Settings, and without an icon
+# theme plus an SVG loader it renders missing-image placeholders.
+gsettings-desktop-schemas = "*"
+adwaita-icon-theme = "*"
+librsvg = "*"
+
+[tasks]
+# The full check: unit tests, a real GTK render, and a proof that a genuine
+# fault is logged rather than escaping. This is the task both the project
+# convention and the PostToolUse hook look for.
+smoke = "./smoke.sh"
+
+# Unit tests alone. COST_METER_HOME points at a fresh throwaway directory so a
+# run never reads or writes the real ledger.
+test = '''bash -c 'COST_METER_HOME="$(mktemp -d)" python -m unittest discover -s tests -v' '''
+
+# One incremental recount. This is what the Stop hook runs, via hooks/tally.sh.
+# Reads the hook payload on stdin; `pixi run tally < /dev/null` forces a recount
+# by hand.
+tally = "python tally.py"
+
+# The panel in the foreground.
+#
+# GDK_BACKEND lives here rather than in run_widget.sh so there is one owner of
+# it: a Wayland client may not position itself or raise itself above other
+# windows, which is exactly what this panel needs, and under XWayland both work.
+# run_widget.sh calls this task, so anything launched from outside the
+# environment -- the SessionStart hook, an autostart entry -- gets the same
+# setting without repeating it.
+widget = { cmd = "python widget.py", env = { GDK_BACKEND = "x11" } }
+
+# Calibration. Pass flags after a bare `--` so pixi does not read them as its
+# own: pixi run calibrate -- --5h 42
+calibrate = "python calibrate.py"
+
+# Register the Stop and SessionStart hooks in ~/.claude/settings.json.
+install-hooks = "./install.sh"

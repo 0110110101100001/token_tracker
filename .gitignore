@@ -1,6 +1,9 @@
 # Runtime state, rebuilt from the transcripts at any time.
 data/
 
+# Solved pixi environment. pixi.lock is committed; this is not.
+.pixi/
+
 # SDD scratch workspace (ledger, briefs, review packages).
 .superpowers/
 
