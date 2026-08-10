@@ -510,7 +510,7 @@ class TestScan(unittest.TestCase):
 
     def test_timestamp_becomes_epoch_seconds(self):
         events, _ = parser.scan(self.root, {}, set())
-        self.assertAlmostEqual(events[0][0], 1786694400.0, places=0)
+        self.assertAlmostEqual(events[0][0], 1786348800.0, places=0)
 
     def test_second_scan_with_returned_offsets_yields_nothing(self):
         events, offsets = parser.scan(self.root, {}, set())
@@ -653,8 +653,13 @@ def scan(root, offsets, known_ids):
     return events, new_offsets
 ```
 
-`fh.tell()` on a text-mode file returns an opaque cookie rather than a byte
-count, but it is exactly what `fh.seek()` accepts, which is all this needs.
+**Amended during execution.** The text-mode implementation above shipped and was
+then replaced: review found that `for line in fh` consumes an unterminated final
+line, `json.loads` rejects it, and `fh.tell()` then records EOF *past* it — so a
+message written while the hook was reading is dropped permanently and silently.
+The shipped version reads in binary and stops at the last complete newline
+(`cut = chunk.rfind(b"\n") + 1`, `end = start + cut`), which also makes `offset`
+a true byte count in the same unit as `size`. See `cost_meter/parser.py`.
 
 - [ ] **Step 5: Run test to verify it passes**
 
