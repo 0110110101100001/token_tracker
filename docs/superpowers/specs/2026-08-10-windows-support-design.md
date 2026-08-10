@@ -81,15 +81,19 @@ New `cost_meter/launch.py` owns what `launch_widget.sh` does today:
 | --- | --- | --- |
 | Is the pid alive? | `os.kill(pid, 0)` | `OpenProcess` + `GetExitCodeProcess` via `ctypes` |
 | Is there a display? | `DISPLAY` / `WAYLAND_DISPLAY` | always true |
-| Detach the child | `start_new_session=True` | `DETACHED_PROCESS \| CREATE_NEW_PROCESS_GROUP \| CREATE_NO_WINDOW` |
+| Detach the child | `start_new_session=True` | `DETACHED_PROCESS \| CREATE_NEW_PROCESS_GROUP` |
 
 `os.kill(pid, 0)` must **not** be used on Windows: CPython maps `os.kill` there
 onto `TerminateProcess`, so the liveness probe would kill the panel it is
-checking for. Hence `ctypes`.
+checking for. Hence `ctypes`. The probe waits on the process handle with a zero
+timeout rather than reading its exit code, because `GetExitCodeProcess` reports
+a running process as `STILL_ACTIVE` — the value 259, which a process that
+genuinely exited with 259 is indistinguishable from.
 
-`CREATE_NO_WINDOW` also suppresses the console flash for the whole spawned
-tree, while a hand-run `pixi run widget` stays attached and noisy — which is
-what you want when debugging.
+`DETACHED_PROCESS` already denies the child a console, which is both the detach
+and the reason no window flashes up, so `CREATE_NO_WINDOW` on top of it would
+be redundant. A hand-run `pixi run widget` keeps its console and stays noisy,
+which is what you want when debugging.
 
 `launch.py` keeps `launch_widget.sh`'s contract: every path exits 0, nothing
 reaches stdout or stderr.
@@ -98,9 +102,15 @@ reaches stdout or stderr.
 for `trap`), and the `test` task stops needing `bash -c`. Both become plain
 pixi tasks running Python, shared by the two platforms.
 
-Wrappers on disk: the existing `.sh` files stay, and `hooks/tally.cmd`,
-`launch_widget.cmd`, `run_widget.cmd` and `install.cmd` join them. Each does
-one thing — `cd` to the repo and hand off to `pixi run --frozen <task>`.
+Wrappers on disk: the existing `.sh` files stay, `smoke.sh` goes (superseded by
+`smoke.py`), and `hooks/tally.cmd`, `launch_widget.cmd`, `run_widget.cmd` and
+`install.cmd` join them. Each does one thing — `cd` to the repo and hand off to
+`pixi run --frozen <task>`.
+
+A `.gitattributes` pins `*.sh` to LF and `*.cmd` to CRLF. With a checkout on
+each platform, `core.autocrlf` would otherwise decide per machine and get one of
+them wrong, and bash fails on a CRLF shebang with a bare `\r: command not found`
+— an error that reads as a broken tool rather than as wrong newlines.
 
 **Accepted cost:** `launch_widget` now pays a `pixi run` startup even when a
 panel is already up, where the bash version decided that for free. Hundreds of
@@ -146,11 +156,20 @@ of that sentence stands, since this design does not cover it.
 
 ## Verification
 
-Done on a real Windows 10 machine, not asserted:
+Done on a real Windows 10 machine, not asserted. All of the following passed:
 
-1. `pixi install` resolves `pixi.lock` for both `linux-64` and `win-64`.
-2. `pixi run test` passes.
-3. `pixi run smoke` passes, including the GTK render selftest.
-4. `pixi run install-hooks` registers both hooks in `~/.claude/settings.json`.
-5. The panel appears on screen, on top, in the bottom-right corner, and its
-   numbers move after an assistant turn.
+1. `pixi install` resolved one lock covering `linux-64` and `win-64`, with
+   `gsettings-desktop-schemas` appearing only under Linux.
+2. `pixi run test` — 104 tests, OK.
+3. `pixi run smoke` — OK, GTK render included (284×122, 745 distinct colours).
+4. `install.cmd` registered both `.cmd` hooks and preserved every unrelated
+   setting; a second run left exactly one hook per event.
+5. The panel drew bottom-right, stayed on top, and showed real figures.
+6. The launcher started a panel in about five seconds, was a no-op on a second
+   run, and replaced the claim of a panel that had been killed hard.
+
+One caveat found by running it: on Windows the hooks need `pixi` on `PATH`, and
+a `PATH` change does not reach an already-running process, so Claude Code has to
+be restarted after pixi is installed. It fails silently and fast when it is not —
+the wrappers exit 0 by design. This is documented in the README's Install and
+Troubleshooting sections.
