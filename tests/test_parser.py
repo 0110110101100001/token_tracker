@@ -1,3 +1,4 @@
+import copy
 import shutil
 import tempfile
 import unittest
@@ -6,6 +7,15 @@ from pathlib import Path
 from cost_meter import parser
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_transcript.jsonl"
+
+
+def _line(message_id, timestamp, model="claude-opus-5"):
+    """Build one newline-terminated assistant transcript line."""
+    return (
+        '{"timestamp":"%s","sessionId":"s1",'
+        '"message":{"id":"%s","model":"%s",'
+        '"usage":{"input_tokens":1,"output_tokens":1}}}\n' % (timestamp, message_id, model)
+    )
 
 
 class TestScan(unittest.TestCase):
@@ -71,9 +81,49 @@ class TestScan(unittest.TestCase):
         self.assertEqual([e[1] for e in events], ["msg_c"])
 
     def test_input_offsets_are_not_mutated(self):
-        offsets = {}
+        _, offsets = parser.scan(self.root, {}, set())
+        before = copy.deepcopy(offsets)
+        with open(self.transcript, "a", encoding="utf-8") as fh:
+            fh.write(_line("msg_d", "2026-08-10T09:00:00.000Z"))
         parser.scan(self.root, offsets, set())
-        self.assertEqual(offsets, {})
+        self.assertEqual(offsets, before)
+
+    def test_offsets_alone_suppress_reemission(self):
+        _, offsets = parser.scan(self.root, {}, set())
+        again, _ = parser.scan(self.root, offsets, set())
+        self.assertEqual(again, [])
+
+    def test_partial_last_line_is_not_consumed(self):
+        line = _line("msg_p", "2026-08-10T09:00:00.000Z")
+        head, tail = line[:60], line[60:]
+        with open(self.transcript, "a", encoding="utf-8") as fh:
+            fh.write(_line("msg_d", "2026-08-10T08:30:00.000Z"))
+            fh.write(head)
+        first, offsets = parser.scan(self.root, {}, set())
+        self.assertEqual([e[1] for e in first], ["msg_a", "msg_c", "msg_d"])
+
+        with open(self.transcript, "a", encoding="utf-8") as fh:
+            fh.write(tail)
+        second, _ = parser.scan(self.root, offsets, set())
+        self.assertEqual([e[1] for e in second], ["msg_p"])
+
+    def test_offsets_for_deleted_files_are_dropped(self):
+        _, offsets = parser.scan(self.root, {}, set())
+        self.assertIn(str(self.transcript), offsets)
+        self.transcript.unlink()
+        _, pruned = parser.scan(self.root, offsets, set())
+        self.assertEqual(pruned, {})
+
+    def test_non_object_json_lines_are_skipped(self):
+        with open(self.transcript, "a", encoding="utf-8") as fh:
+            fh.write("[1, 2]\n")
+            fh.write("123\n")
+            fh.write('"a string"\n')
+            fh.write('{"timestamp":42,"message":"not a dict"}\n')
+            fh.write('{"message":{"id":"x","model":"m","usage":"not a dict"}}\n')
+            fh.write(_line("msg_d", "2026-08-10T09:00:00.000Z"))
+        events, _ = parser.scan(self.root, {}, set())
+        self.assertEqual([e[1] for e in events], ["msg_a", "msg_c", "msg_d"])
 
 
 if __name__ == "__main__":
