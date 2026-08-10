@@ -50,16 +50,58 @@ prices each assistant message, and keeps a rolling ledger of the result.
    ]
    ```
 
-2. Start the panel:
+2. Register the `SessionStart` hook in the same file, so the panel comes up
+   whenever a Claude Code session starts and is not already running:
 
-   ```bash
-   ./run_widget.sh
+   ```json
+   "SessionStart": [
+     {
+       "hooks": [
+         {"type": "command", "command": "/home/martin/Desktop/token_calculator/launch_widget.sh", "timeout": 10}
+       ]
+     }
+   ]
    ```
 
-3. To have the panel start automatically on login, an autostart entry at
-   `~/.config/autostart/claude-cost-meter.desktop` handles it for you — it is
-   not part of this repo, so it survives a fresh checkout and is created
-   once, separately, on the machine that runs the panel.
+3. To have the panel start on login as well, an autostart entry at
+   `~/.config/autostart/claude-cost-meter.desktop` handles it — it is not part
+   of this repo, so it survives a fresh checkout and is created once,
+   separately, on the machine that runs the panel.
+
+## Starting and stopping
+
+The two halves are independent: the hook keeps counting whether or not the
+panel is on screen, and the panel keeps rendering whether or not the hook is
+registered (it marks itself stale after ten minutes without an update).
+
+Start the panel by hand:
+
+```bash
+setsid ./run_widget.sh >/dev/null 2>&1 </dev/null &
+```
+
+`setsid` matters. Without it the panel is a child of whatever shell launched
+it and dies when that shell does — which is why launching it from inside a
+Claude Code tool call does not stick.
+
+Stop it with right click → *Quit*, or:
+
+```bash
+pkill -x -f "python3 widget.py"
+```
+
+The `-x` is not optional. `pkill -f "widget.py"` matches any process whose
+command line merely *contains* that text — including the shell you typed the
+command into, which then kills your own terminal.
+
+Closing the panel keeps it closed for the rest of the session; `launch_widget.sh`
+only starts one if none is running, so the next session brings it back.
+
+Force a recount without waiting for a turn to finish:
+
+```bash
+./tally.py < /dev/null
+```
 
 ## Calibration
 
