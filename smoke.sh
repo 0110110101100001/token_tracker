@@ -25,8 +25,8 @@ home="$(mktemp -d)"
 # The mv/restore must survive the script dying in between, or an interrupted
 # run leaves the user's tree without pricing.json. The trap restores it on
 # any exit (normal or not).
-mv pricing.json pricing.json.smoke-hidden
 trap 'mv -f pricing.json.smoke-hidden pricing.json 2>/dev/null || true' EXIT
+mv pricing.json pricing.json.smoke-hidden
 set +e
 COST_METER_HOME="$home" ./tally.py < /dev/null
 code=$?
