@@ -62,6 +62,16 @@ class CostMeter(Gtk.Window):
         self.connect("button-press-event", self.on_click)
         self.connect("destroy", Gtk.main_quit)
 
+        # Position bookkeeping. user_positioned means the user chose a spot, so
+        # automatic re-anchoring must stop; _anchor is the last position we set
+        # ourselves, which is how a self-inflicted move is told apart from a
+        # user drag; _position_timer is the single debounce source.
+        self.user_positioned = False
+        self._anchor = None
+        self._position_timer = None
+        self.connect("size-allocate", self.on_size_allocate)
+        self.connect("configure-event", self.on_configure)
+
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
         Gtk.StyleContext.add_provider_for_screen(
@@ -85,39 +95,70 @@ class CostMeter(Gtk.Window):
         self.warning.set_no_show_all(True)
         grid.attach(self.warning, 0, 6, 2, 1)
 
-        self.place()
         self.watch()
-        self.refresh()
+        self.refresh()  # before place(), so the first anchor sees real content
+        self.place()
 
     def place(self):
         config = store.read_json(paths.config_path(), default={}) or {}
         position = config.get("widget_position")
+        self.user_positioned = bool(position)
+        self._anchor = None
         if position:
-            self.move(int(position[0]), int(position[1]))
+            # Restoring a saved position is a move we make ourselves, so record
+            # it as the anchor too; otherwise every startup writes the same
+            # coordinates straight back and takes the lock to do it.
+            self._anchor = (int(position[0]), int(position[1]))
+            self.move(*self._anchor)
             return
+        self.anchor_bottom_right()
+
+    def anchor_bottom_right(self):
+        """Seat the window in the bottom-right corner of the work area.
+
+        Anchored on the window's actual size, not on a pre-realize guess: the
+        warning row is unwrapped, so two long unknown model ids can double the
+        width, and anchoring on a lower bound hangs the panel off the screen
+        exactly when it has something urgent to report. on_size_allocate calls
+        this again whenever that size changes.
+        """
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor() or display.get_monitor(0)
         area = monitor.get_workarea()
-        # Before realize the preferred width underreports (200 here), but
-        # set_default_size already fixed the real width at WIDTH, so anchoring
-        # on the smaller number pushes the right edge off the monitor.
-        width = max(self.get_preferred_size()[1].width, WIDTH)
-        height = 140
-        self.move(area.x + area.width - width - MARGIN,
-                  area.y + area.height - height - MARGIN)
+        size = self.get_size()
+        target = (area.x + area.width - size.width - MARGIN,
+                  area.y + area.height - size.height - MARGIN)
+        if target == self._anchor:
+            return  # already seated here; moving again would loop
+        self._anchor = target
+        self.move(*target)
+
+    def on_size_allocate(self, _widget, _allocation):
+        if not self.user_positioned:
+            self.anchor_bottom_right()
+
+    def at_anchor(self):
+        """True when the window sits exactly where we last put it ourselves.
+
+        This is what separates our own re-anchor from a user drag, and it is
+        deliberately not a timer: a resize emits its own configure-event, so a
+        short-lived "I am anchoring now" flag misses it and the automatic move
+        gets persisted as if the user had chosen it.
+        """
+        return self._anchor is not None and tuple(self.get_position()) == self._anchor
 
     def update_config(self, mutate):
         """Read-modify-write config under the lock.
 
         calibrate.py writes ceilings into the same file; without the lock a
         drag could clobber a ceiling written moments earlier and silently send
-        the display back to dollars.
+        the display back to dollars. calibrate.py uses the same helper, so both
+        sides hold the lock across the read as well as the write.
         """
         try:
-            with store.exclusive_lock(paths.lock_path()):
-                config = store.read_json(paths.config_path(), default={}) or {}
+            with store.update_json_locked(paths.config_path(),
+                                          paths.lock_path()) as config:
                 mutate(config)
-                store.write_json_atomic(paths.config_path(), config)
         except store.LockTimeout:
             pass  # not worth interrupting the user over a window position
 
@@ -172,14 +213,35 @@ class CostMeter(Gtk.Window):
         if event.button == 1:
             self.begin_move_drag(event.button, int(event.x_root),
                                  int(event.y_root), event.time)
-            GLib.timeout_add(500, self._store_position_once)
-            return True
+            return True  # on_configure persists wherever the drag ends up
         if event.button == 3:
             self.show_menu(event)
             return True
         return False
 
-    def _store_position_once(self):
+    def on_configure(self, _widget, _event):
+        """Debounce position saves until movement stops.
+
+        A fixed timer started at drag begin would record a mid-drag position and
+        never the drop point, and repeated drags would stack timers. Resetting a
+        single source on every configure-event stores exactly one position, the
+        final one.
+        """
+        if self.at_anchor():
+            return False  # our own re-anchor, not the user moving the window
+        if self._position_timer:
+            GLib.source_remove(self._position_timer)
+        self._position_timer = GLib.timeout_add(700, self._persist_position)
+        return False
+
+    def _persist_position(self):
+        self._position_timer = None
+        if self.at_anchor():
+            # Settled exactly where we put it, so this was a resize re-anchor
+            # rather than a choice; claiming it would freeze the panel in place.
+            return False
+        self.user_positioned = True
+        self._anchor = None
         self.remember_position()
         return False
 
@@ -198,6 +260,11 @@ class CostMeter(Gtk.Window):
         self.menu = menu  # keep a reference so it is not collected mid-display
 
     def reset_position(self):
+        # Drop any debounce still in flight, or it would write the old position
+        # straight back after the reset.
+        if self._position_timer:
+            GLib.source_remove(self._position_timer)
+            self._position_timer = None
         self.update_config(lambda c: c.pop("widget_position", None))
         self.place()
 

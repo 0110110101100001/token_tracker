@@ -53,6 +53,40 @@ def _spawn_lock_holder(lock_path, hold_seconds):
     return proc
 
 
+def _spawn_config_writer(config_path, lock_path, hold_seconds):
+    """A calibrate.py-shaped competitor: hold the lock, then write a ceiling
+    into config.json just before releasing it.
+
+    Writing late in the hold is the point — it is the value an unlocked read
+    performed before the lock was acquired would silently destroy.
+    """
+    code = (
+        "import sys, time\n"
+        f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
+        "from pathlib import Path\n"
+        "from cost_meter import store\n"
+        f"lock = Path({str(lock_path)!r})\n"
+        f"config = Path({str(config_path)!r})\n"
+        "with store.exclusive_lock(lock, timeout=30):\n"
+        "    print('locked', flush=True)\n"
+        f"    time.sleep({hold_seconds!r})\n"
+        "    data = store.read_json(config, default={}) or {}\n"
+        "    data['ceiling_5h_usd'] = 42.0\n"
+        "    store.write_json_atomic(config, data)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    line = proc.stdout.readline()
+    if line.strip() != "locked":
+        proc.wait(timeout=5)
+        raise RuntimeError(f"config writer subprocess failed: {line!r} {proc.stderr.read()!r}")
+    return proc
+
+
 def _wait_for_holder(proc):
     """Wait for the holder subprocess to exit and close its pipes, so tests
     don't leak file descriptors (and the resulting ResourceWarnings)."""
@@ -152,6 +186,77 @@ class TestStore(unittest.TestCase):
         # Must have actually blocked until the holder's sleep finished, not
         # proceeded immediately as if the lock were uncontended.
         self.assertGreaterEqual(elapsed, 0.4)
+
+
+class TestUpdateJsonLocked(unittest.TestCase):
+    """config.json has two writers: the widget's position and calibrate.py's
+    ceilings. Whichever writes second must not drop the other's key."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.config = Path(self.tmp.name) / "config.json"
+        self.lock = Path(self.tmp.name) / "tally.lock"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_unrelated_keys_survive_a_mutation(self):
+        store.write_json_atomic(self.config, {"ceiling_5h_usd": 42.0})
+        with store.update_json_locked(self.config, self.lock) as config:
+            config["widget_position"] = [10, 20]
+        self.assertEqual(
+            store.read_json(self.config),
+            {"ceiling_5h_usd": 42.0, "widget_position": [10, 20]},
+        )
+
+    def test_missing_file_starts_from_an_empty_dict(self):
+        with store.update_json_locked(self.config, self.lock) as config:
+            config["widget_position"] = [1, 2]
+        self.assertEqual(store.read_json(self.config), {"widget_position": [1, 2]})
+
+    def test_lock_is_held_across_the_read(self):
+        """The read must happen inside the lock, not before it.
+
+        A competing writer holds the lock and only writes its key just before
+        releasing. If update_json_locked read the file up front, that key would
+        be overwritten by the stale copy; holding the lock across both halves
+        means the read observes it.
+        """
+        store.write_json_atomic(self.config, {})
+        holder = _spawn_config_writer(self.config, self.lock, hold_seconds=1.0)
+        try:
+            start = time.monotonic()
+            with store.update_json_locked(self.config, self.lock, timeout=10.0) as config:
+                config["widget_position"] = [10, 20]
+            elapsed = time.monotonic() - start
+        finally:
+            _wait_for_holder(holder)
+
+        # Genuinely waited for the holder rather than racing past it.
+        self.assertGreaterEqual(elapsed, 0.8)
+        self.assertEqual(
+            store.read_json(self.config),
+            {"ceiling_5h_usd": 42.0, "widget_position": [10, 20]},
+        )
+
+    def test_lock_timeout_propagates_and_leaves_the_file_alone(self):
+        store.write_json_atomic(self.config, {"ceiling_5h_usd": 42.0})
+        holder = _spawn_lock_holder(self.lock, hold_seconds=1.0)
+        try:
+            with self.assertRaises(store.LockTimeout):
+                with store.update_json_locked(self.config, self.lock, timeout=0.2):
+                    pass  # pragma: no cover - must never be entered
+        finally:
+            _wait_for_holder(holder)
+        self.assertEqual(store.read_json(self.config), {"ceiling_5h_usd": 42.0})
+
+    def test_an_exception_in_the_body_does_not_write(self):
+        store.write_json_atomic(self.config, {"ceiling_5h_usd": 42.0})
+        with self.assertRaises(ValueError):
+            with store.update_json_locked(self.config, self.lock) as config:
+                config["widget_position"] = [10, 20]
+                raise ValueError("boom")
+        self.assertEqual(store.read_json(self.config), {"ceiling_5h_usd": 42.0})
 
 
 class TestPaths(unittest.TestCase):

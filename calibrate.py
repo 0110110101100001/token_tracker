@@ -55,13 +55,26 @@ def main():
                   file=sys.stderr)
             return 1
 
-    config = store.read_json(paths.config_path(), default={}) or {}
-    for label, window, key, pct in requested:
-        usd = state[window]["usd"]
-        config[key] = usd / (pct / 100.0)
-        print(f"{label}: ${usd:.2f} = {pct:g}% -> ceiling ${config[key]:.2f}")
-
-    store.write_json_atomic(paths.config_path(), config)
+    # Read and write under one lock hold: the widget stores widget_position in
+    # this same file, so an unlocked read-modify-write on either side silently
+    # drops the other's value. The refresh lock above is already released —
+    # exclusive_lock is not reentrant, so the two must not nest.
+    #
+    # The lines are printed only after the write lands, so a run can never
+    # report a ceiling it failed to persist.
+    lines = []
+    try:
+        with store.update_json_locked(paths.config_path(), paths.lock_path()) as config:
+            for label, window, key, pct in requested:
+                usd = state[window]["usd"]
+                config[key] = usd / (pct / 100.0)
+                lines.append(
+                    f"{label}: ${usd:.2f} = {pct:g}% -> ceiling ${config[key]:.2f}")
+    except store.LockTimeout as exc:
+        print(f"could not save the calibration: {exc}", file=sys.stderr)
+        return 1
+    for line in lines:
+        print(line)
 
     try:
         with store.exclusive_lock(paths.lock_path()):
