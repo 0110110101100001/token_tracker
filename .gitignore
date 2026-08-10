@@ -1,0 +1,8 @@
+# Runtime state, rebuilt from the transcripts at any time.
+data/
+
+# SDD scratch workspace (ledger, briefs, review packages).
+.superpowers/
+
+__pycache__/
+*.pyc
