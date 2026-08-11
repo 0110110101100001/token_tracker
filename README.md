@@ -4,6 +4,78 @@ A bottom-right, always-on-top GTK panel that shows what your Claude Code work
 costs. It refreshes itself after every assistant turn, driven by a `Stop`
 hook — you never have to run anything by hand for the numbers to move.
 
+It runs on **Linux and Windows**. It counts **only the Claude Code work done on
+the machine it runs on**, which is the first thing to understand about it — see
+[What it counts](#what-it-counts).
+
+## Quick start
+
+You need [pixi](https://pixi.sh) and Claude Code. Nothing else has to be
+installed system-wide: pixi supplies Python and the GTK 3 bindings itself, so in
+particular you do **not** need a distribution's `python3-gi`.
+
+**Linux** — under Xorg or XWayland, since the panel has to place itself in a
+corner and raise itself above other windows:
+
+```bash
+git clone <this repo> && cd token_calculator
+pixi install                # solve and fetch Python + GTK 3 (a few hundred MB)
+pixi run install-hooks      # register the two hooks in ~/.claude/settings.json
+pixi run smoke              # prove it works before relying on it
+```
+
+**Windows** — 10 or newer, 64-bit. The same four commands, in PowerShell or
+`cmd`:
+
+```powershell
+git clone <this repo>
+cd token_calculator
+pixi install
+pixi run install-hooks
+pixi run smoke
+```
+
+Then **restart Claude Code** and start a new session. The panel comes up on its
+own, and the numbers start moving after your first assistant turn.
+
+On Windows that restart is not optional, and skipping it is the one failure that
+looks like nothing happening at all: the hooks have to find `pixi` on `PATH`, and
+a `PATH` change does not reach a process that was already running when the change
+was made — so the hooks run, find no pixi, and exit 0 exactly as they are
+designed to. On Linux you only need it if you installed pixi from the same shell
+Claude Code was started from.
+
+There is **no macOS support**. Nothing here is hostile to it any more — the file
+lock is portable and the entry points are Python — but no `osx-*` platform has
+been solved or smoke-tested, so it is not claimed.
+
+## What it counts
+
+Worth reading before you trust a figure on the panel.
+
+- **This machine, this account, and nothing else.** The whole input is the
+  Claude Code transcripts under `~/.claude/projects/` on the computer the tool
+  runs on. Claude Code on a second machine, under another user account, on the
+  other side of a dual boot, or on Windows beside WSL writes its transcripts
+  somewhere this installation never looks. claude.ai, the desktop app and the
+  phone write no local transcripts at all. All of that spends your subscription
+  without moving a number here.
+- **The dollar figures are an API-equivalent, not an invoice.** They price your
+  token counts at published API rates, which is a consistent way to weight and
+  compare usage. On a subscription it is not a bill you will receive.
+- **The 5h and week percentages are estimates**, derived from ceilings you
+  calibrate against your own `/usage` readings. `/usage` remains the authority on
+  limit state; this panel is a continuously-updated approximation of it.
+
+The first point is the one that bites hardest, and it bites through calibration:
+a ceiling derived from locally-recorded spend quietly absorbs whatever usage this
+installation cannot see, which holds up while that share stays roughly constant
+and drifts as soon as it does not. If you move your work between machines,
+recalibrate rather than trusting the percentage.
+
+The full list, including the ones that are only worth knowing once something
+looks wrong, is under [Known limitations](#known-limitations).
+
 ## What it is
 
 The panel is a small borderless window anchored to the bottom-right corner of
@@ -13,10 +85,30 @@ your screen. It shows six rows:
 - **session** — USD cost of the current Claude Code session
 - **today** — USD cost since local midnight
 - *(separator)*
-- **5h window** — USD spent in the trailing 5 hours, with a `%` of your
-  calibrated 5-hour subscription limit once calibrated
-- **week** — USD spent in the trailing 7 days, with a `%` of your calibrated
-  weekly limit once calibrated
+- **5h window** — USD spent in the *current 5-hour block*, with the clock time
+  that block resets: `$71.46 · 19:04` on its own until calibrated and
+  `$71.46 ~20 % · 19:04` afterwards
+- **week** — the same for the trailing 7 days, with no reset time (the weekly
+  cap has no block boundary this tool can locate)
+
+The 5-hour limit is a **fixed block, not a trailing five hours**. A block opens
+on the first message you send after the previous one expired and runs five hours
+from that message, which is why `/usage` names a reset time instead of counting
+down continuously. Spend in the previous block stops counting the moment the new
+one opens, even though it is still only minutes old. Once a block expires with no
+new message, the row reads `$0.00` and shows no reset time: nothing is counted
+against the limit until the next message opens the next block.
+
+The reset time is on the row because it is the one figure here that can be
+checked against `/usage` directly. If the panel says `19:04` and `/usage` says it
+resets at 7pm, the two are describing the same block and the percentage beside it
+is trustworthy. If they disagree, the calibration is measuring the wrong window
+and the percentage should not be believed.
+
+The dollar figure never goes away, because it is the part that is measured: the
+percentage is only ever an estimate against a ceiling you derived yourself, and
+`~` is what marks it as one. Only the percentage carries the green/amber/red
+colour.
 
 A seventh row appears only when needed. It carries two kinds of warning:
 
@@ -35,41 +127,17 @@ Cost is computed from the same token counts Claude Code already writes to
 its own transcript files under `~/.claude/projects/`; the tool reads those,
 prices each assistant message, and keeps a rolling ledger of the result.
 
-## Requirements
+## What the graphical session has to provide
 
-- **Linux or Windows, with a graphical session.**
-  - On **Linux** the panel runs as an X11 client, under Xorg or XWayland. It
-    has to position itself in a corner and raise itself above other windows,
-    which a pure Wayland client may not do.
-  - On **Windows** (10 or newer, 64-bit) it runs on GDK's win32 backend, which
-    needs no such coaxing.
-  - There is **no macOS support**. Nothing here is hostile to it any more —
-    the file lock is portable and the entry points are Python — but no `osx-*`
-    platform has been solved or smoke-tested, so it is not claimed.
-- **[pixi](https://pixi.sh).** It supplies everything else, including Python
-  and the GTK 3 bindings. Nothing has to be installed system-wide — in
-  particular you do **not** need a distribution's `python3-gi`.
-- **Claude Code**, since the whole input is its transcripts.
+The panel is an X11 client on Linux, which is why the pixi task sets
+`GDK_BACKEND=x11`: it has to position itself in a corner and raise itself above
+other windows, and a pure Wayland client may do neither. Under Xorg or XWayland
+that works; under plain Wayland the panel can end up running with no visible
+effect. On Windows it uses GDK's win32 backend, which needs no such coaxing —
+there is no equivalent setting there and none is wanted, since forcing x11 would
+leave the panel no display to open.
 
-## Install
-
-```bash
-git clone <this repo> && cd token_calculator
-pixi install                # solve and fetch Python + GTK 3 (a few hundred MB)
-pixi run install-hooks      # register the two hooks in ~/.claude/settings.json
-pixi run smoke              # prove it works before relying on it
-```
-
-Those four commands are the same on Linux and Windows.
-
-**On Windows, restart Claude Code after installing pixi** — before the hooks
-can run `pixi`, it has to be on `PATH`, and a `PATH` change does not reach
-processes that were already running when it was made. Skipping this is the one
-failure that looks like nothing happening at all: the hooks run, find no `pixi`,
-and exit 0 exactly as they are designed to.
-
-Then start a new Claude Code session. The panel comes up on its own, and the
-numbers start moving after your first assistant turn.
+## Install, in detail
 
 `install-hooks` edits `~/.claude/settings.json` for you because the hooks must
 be registered by absolute path, which is the one thing that cannot be committed
@@ -163,6 +231,24 @@ use `pixi run python widget.py` when you want the output.
 start the panel in the foreground from outside the pixi environment, which is
 what an autostart entry wants.
 
+On a systemd Linux desktop the launcher starts the panel inside a transient
+scope of its own, via `systemd-run --user --scope`. This is not tidiness, it is
+the only thing that actually detaches it: terminal emulators put each tab in a
+scope with `KillMode=control-group`, and `setsid` escapes a process group and a
+session but never a cgroup, so closing the tab that happened to start the panel
+used to take the panel down with it — silently, since the kill is a SIGTERM from
+systemd. The panel then reappeared at the next `SessionStart`, which looks from
+the outside like it vanishing and returning at random. If the scope will not
+start, the launcher logs that and falls back to a plainly detached child, which
+is better than no panel. There is no equivalent problem on Windows, where a
+`DETACHED_PROCESS` child belongs to nothing that can be closed underneath it.
+
+You can see which scope a panel got with:
+
+```bash
+systemctl --user status "$(cat data/widget.pid)"
+```
+
 On Windows the panel runs under `pythonw.exe`, not `python.exe`. The hook spawns
 it detached, with no console to inherit, and Windows answers that by allocating
 a brand new console for any console-subsystem program — so `python` would leave
@@ -236,11 +322,44 @@ To calibrate:
    the reported percentage, and stores it in `data/config.json`. From then
    on the corresponding row shows a `%` alongside the dollar figure.
 
+**Check the reset time before you trust a `--5h` calibration.** The panel's 5h
+row names the time its block resets; `/usage` names the same thing. If they
+match, both are describing the same block and the derived ceiling is sound. If
+they don't, calibrate anyway but expect the percentage to be wrong — the two are
+dividing by spend from different windows, and the ceiling absorbs the difference.
+
+**Re-calibrate after a long gap in usage, not in the middle of one block.** The
+ceiling is a ratio, so it is only as good as the pair of numbers it came from.
+Calibrating twice inside one block should give the same ceiling both times; if it
+doesn't, something upstream of the ratio is wrong.
+
+To undo it — because you mistyped a percentage, read the wrong window, or would
+rather just see dollars:
+
+```bash
+pixi run calibrate -- --clear         # both windows
+pixi run calibrate -- --clear-5h      # or one at a time
+pixi run calibrate -- --clear-week
+```
+
+That removes the stored ceiling and the row goes back to a dollar figure with no
+percentage. It reports what it actually removed, and clearing what was never
+calibrated is not an error, so it is safe to run twice. A clear cannot be
+combined with a `--5h` or `--week` in the same run: the two contradict each
+other, and the run is rejected before anything is read or written rather than
+resolved by argument order.
+
 Spend is measured in USD-equivalent rather than raw tokens because the
 models draw on the subscription limit unevenly — an Opus token costs the
 limit more than a Sonnet token — and pricing already carries those per-model
 weights, so converting through USD folds that difference in automatically
 instead of requiring a second, separate weighting scheme.
+
+Calibrate on the machine you do most of your work on, and recalibrate if that
+changes. The ceiling is derived from spend this installation can see, so it
+silently folds in whatever share of your usage happens elsewhere — see
+[What it counts](#what-it-counts). That is stable while the share is, and wrong
+as soon as you move your work.
 
 ## Pricing
 
@@ -271,6 +390,17 @@ your spend.
 
 ## Known limitations
 
+- **It counts one machine, not a subscription.** `~/.claude/projects/` on the
+  computer the tool runs on is the entire input; there is no account-wide source
+  to read, since Claude Code keeps no such thing locally. So the panel is a
+  per-installation view of usage that is really billed per subscription. Nothing
+  warns you about the gap — invisible usage is indistinguishable from no usage —
+  and the effect is worst on the two limit rows, which compare a partial spend
+  against a ceiling the whole subscription shares. Running the tool on each
+  machine you use gives each one its own honest local ledger, but does not add
+  them up; there is deliberately no shared store, because merging ledgers across
+  machines means reconciling clocks and de-duplicating sessions, which is a much
+  larger tool than this one.
 - **USD here is an API-equivalent, not an invoice.** The account this tool
   was built for is on a subscription, not pay-per-token API billing — the
   dollar figures are a consistent way to compare and weight usage, not a
@@ -286,6 +416,12 @@ your spend.
   real subscription limit resets on. This reads slightly pessimistic:
   the tool's week can include a leading tail of usage the real limit has
   already reset past.
+- **The 5h block is reconstructed from Claude Code transcripts alone.** The real
+  limit pool is shared with Claude chat on claude.ai, and nothing on this machine
+  records that usage. A block opened by a message sent in the browser is
+  invisible here, so the panel would anchor the block on your first Claude Code
+  message instead and place the reset later than the real one. Comparing the
+  row's reset time against `/usage` is what catches this.
 - **Server-side tool use is not counted.** Web search is billed per thousand
   searches rather than per token, and those counts (`usage.server_tool_use`)
   are ignored. They are zero across every transcript on the machine this was
@@ -361,6 +497,16 @@ platforms run the same check rather than a pair of twins that can drift.
 - **Numbers look lower than expected** — check the panel for a `?` warning
   row. It means at least one model you used has no entry in `pricing.json`
   and is being excluded from the totals rather than counted as zero.
+- **The panel vanishes mid-session and comes back later, on Linux** — it was
+  killed with the terminal tab that started it, and came back at the next
+  `SessionStart` (a new session, a resume, a `/clear`, or an auto-compact, which
+  is why it can look like it returns when a long task finishes). Fixed by
+  launching into a scope of the panel's own; if you still see it, check whether
+  the launcher had to fall back — `data/cost-meter.log` says
+  `launch: scope spawn exited immediately` when it did — and compare
+  `systemctl --user status "$(cat data/widget.pid)"` against the tab you are
+  typing in. A panel sharing a `ptyxis-spawn-…` or `vte-spawn-…` scope with a
+  shell is one that will die with that shell.
 - **The panel is invisible, on Linux** — confirm the pixi `widget` task's
   `GDK_BACKEND=x11` took effect and you are on Xorg or XWayland. A pure Wayland
   client cannot position itself in a corner or raise itself above other windows,

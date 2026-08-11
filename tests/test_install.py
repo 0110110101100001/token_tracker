@@ -1,6 +1,8 @@
 # tests/test_install.py
 import os
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -196,6 +198,56 @@ class PanelLivenessTest(TempHome):
         # process Windows handed the dead panel's number to.
         paths.pid_path().write_text(f"{os.getpid()}\n", encoding="utf-8")
         self.assertFalse(launch.panel_is_running())
+
+
+def cgroup_of(pid):
+    """The unified-hierarchy cgroup of `pid`, or None if it cannot be read."""
+    try:
+        lines = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        hierarchy, _, path = line.partition("::")
+        if hierarchy == "0":
+            return path
+    return None
+
+
+@unittest.skipUnless(launch.systemd_available(),
+                     "cgroup escape only applies to a systemd Linux session")
+class SpawnEscapesTheCallersCgroupTest(unittest.TestCase):
+    """The panel must not be left in the cgroup of whoever launched it.
+
+    Regression test with a real cause. setsid escapes the process group and the
+    session, which is all the launcher used to do, but not the cgroup — and
+    terminal emulators put each tab in a transient scope with
+    KillMode=control-group. So closing the tab that happened to win the launch
+    race killed the panel with it, silently: the kill is a SIGTERM from systemd
+    and the panel's output goes to DEVNULL either way. The panel then came back
+    at the next SessionStart, which from the outside looks like it vanishing and
+    returning at random.
+    """
+
+    def test_the_child_lands_outside_our_cgroup(self):
+        ours = cgroup_of(os.getpid())
+        self.assertIsNotNone(ours, "cannot read our own cgroup")
+        child = launch.spawn_detached(
+            [sys.executable, "-c", "import time; time.sleep(30)"], Path.cwd())
+        try:
+            # Polled rather than read once: systemd-run execs the panel only
+            # after the manager has moved it, so for the first few milliseconds
+            # the pid is still systemd-run sitting in our own cgroup.
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                theirs = cgroup_of(child.pid)
+                if theirs is not None and theirs != ours:
+                    return
+                time.sleep(0.05)
+            self.fail(f"child stayed in our cgroup ({ours}); a terminal tab "
+                      f"closing would take the panel down with it")
+        finally:
+            child.kill()
+            child.wait(timeout=10)
 
 
 class AutostartOwnershipTest(unittest.TestCase):

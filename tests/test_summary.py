@@ -2,7 +2,7 @@
 import unittest
 from datetime import datetime
 
-from cost_meter.summary import build_state
+from cost_meter.summary import build_state, parse_updated_at
 
 PRICING = {"claude-opus-5": {"input": 5.0, "output": 25.0}}
 NO_CAL = {"ceiling_5h_usd": None, "ceiling_7d_usd": None}
@@ -34,6 +34,73 @@ class TestBuildState(unittest.TestCase):
 
     def test_five_hour_window_excludes_older_events(self):
         events = [event(self.now - 6 * 3600, "old"), event(self.now - 60, "new")]
+        state = build_state(events, PRICING, "s1", set(), self.now, NO_CAL)
+        self.assertAlmostEqual(state["window_5h"]["usd"], 25.0)
+
+    def test_five_hour_window_excludes_the_previous_block(self):
+        """The limit is a fixed block, not a trailing five hours.
+
+        The block opens on the first message after the previous one expired and
+        runs five hours from there, so spend from the previous block does not
+        follow you into this one even while it is still less than five hours old.
+        Counting it trailing-style is what made the calibration drift: the same
+        reported percentage divided by an inflated dollar figure produced a
+        ceiling that changed every time the two blocks overlapped differently.
+        """
+        events = [
+            event(self.now - 6 * 3600, "block-a-open"),   # opens block A
+            event(self.now - 90 * 60, "block-a-tail"),    # still inside block A
+            event(self.now - 30 * 60, "block-b-open"),    # block A expired: opens B
+        ]
+        state = build_state(events, PRICING, "s1", set(), self.now, NO_CAL)
+        # A trailing window would also count block-a-tail, reading 50.00.
+        self.assertAlmostEqual(state["window_5h"]["usd"], 25.0)
+
+    def test_five_hour_window_reports_when_the_block_resets(self):
+        events = [event(self.now - 6 * 3600, "a"), event(self.now - 30 * 60, "b")]
+        state = build_state(events, PRICING, "s1", set(), self.now, NO_CAL)
+        resets_at = parse_updated_at(state["window_5h"]["resets_at"])
+        self.assertAlmostEqual(resets_at, self.now - 30 * 60 + 5 * 3600, places=3)
+
+    def test_five_hour_window_is_zero_once_the_block_has_expired(self):
+        """No block is open, so nothing is counted against the limit yet.
+
+        Reporting the expired block's spend would keep the row red long after
+        the limit had actually reset, which is the opposite of the mistake the
+        trailing window made.
+        """
+        events = [event(self.now - 6 * 3600, "a")]
+        state = build_state(events, PRICING, "s1", set(), self.now, NO_CAL)
+        self.assertAlmostEqual(state["window_5h"]["usd"], 0.0)
+        self.assertIsNone(state["window_5h"]["resets_at"])
+
+    def test_blocks_chain_from_the_oldest_event_not_from_now(self):
+        """Where the open block starts depends on the whole chain before it.
+
+        Two messages 30 minutes apart open one block, not two: the second falls
+        inside the first's five hours. Anchoring on the most recent gap instead
+        would put the reset 30 minutes late and undercount the block.
+        """
+        events = [
+            event(self.now - 3 * 3600, "open"),
+            event(self.now - 150 * 60, "same-block"),
+        ]
+        state = build_state(events, PRICING, "s1", set(), self.now, NO_CAL)
+        self.assertAlmostEqual(state["window_5h"]["usd"], 50.0)
+        resets_at = parse_updated_at(state["window_5h"]["resets_at"])
+        self.assertAlmostEqual(resets_at, self.now - 3 * 3600 + 5 * 3600, places=3)
+
+    def test_out_of_order_events_do_not_break_block_chaining(self):
+        """events.jsonl is append-ordered per scan, not globally sorted.
+
+        With several sessions running, one hook can append a batch that predates
+        what another already wrote, so the chain has to sort before walking it.
+        """
+        events = [
+            event(self.now - 30 * 60, "block-b-open"),
+            event(self.now - 6 * 3600, "block-a-open"),
+            event(self.now - 90 * 60, "block-a-tail"),
+        ]
         state = build_state(events, PRICING, "s1", set(), self.now, NO_CAL)
         self.assertAlmostEqual(state["window_5h"]["usd"], 25.0)
 

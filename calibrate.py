@@ -5,9 +5,17 @@ Limit state is not stored locally, so it cannot be read — only estimated.
 Consumption is measured in USD-equivalent rather than tokens, because Opus
 draws harder on the limit than Sonnet and pricing weights the models for free.
 
+The 5-hour figure this divides into is the spend in the *current block* — the
+one that opened on your first message after the previous block expired — not a
+trailing five hours. Check that the panel's reset time matches the one /usage
+prints before trusting the ceiling a run derives: if they disagree, the two
+sides are dividing spend from different windows and the ceiling absorbs the
+difference rather than the error being visible.
+
 Usage (the bare -- keeps pixi from reading --5h as one of its own flags):
-    pixi run calibrate -- --5h 62      # /usage reported 62% for the 5-hour window
+    pixi run calibrate -- --5h 62      # /usage reported 62% for the 5-hour block
     pixi run calibrate -- --week 31    # /usage reported 31% for the week
+    pixi run calibrate -- --clear      # forget both, back to dollar figures only
 """
 
 import argparse
@@ -16,20 +24,89 @@ import sys
 from cost_meter import paths, store
 from tally import refresh
 
+CEILINGS = {"5h window": "ceiling_5h_usd", "week": "ceiling_7d_usd"}
 
-def main():
+
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--5h", dest="five_hour", type=float,
                         help="percentage /usage reports for the 5-hour window")
     parser.add_argument("--week", dest="week", type=float,
                         help="percentage /usage reports for the week")
-    args = parser.parse_args()
+    parser.add_argument("--clear", action="store_true",
+                        help="forget both calibrations; the rows go back to "
+                             "dollar figures with no percentage")
+    parser.add_argument("--clear-5h", dest="clear_5h", action="store_true",
+                        help="forget the 5-hour calibration only")
+    parser.add_argument("--clear-week", dest="clear_week", action="store_true",
+                        help="forget the weekly calibration only")
+    return parser
 
-    if args.five_hour is None and args.week is None:
-        parser.error("give at least one of --5h or --week")
-    for value in (args.five_hour, args.week):
-        if value is not None and not 1.0 <= value <= 100.0:
+
+def clear_ceilings(keys):
+    """Remove `keys` from config.json. Returns the ones that were really set.
+
+    Read-modify-write under the lock, like every other writer of this file: the
+    panel keeps its window position here too, and a wholesale rewrite would drop
+    whichever value this side does not know about.
+
+    Clearing something already clear is not an error. The flag names the state
+    you want, not a transition you have to be mid-way through, which is what
+    makes it safe to run twice.
+    """
+    with store.update_json_locked(paths.config_path(), paths.lock_path()) as config:
+        return [key for key in keys if config.pop(key, None) is not None]
+
+
+def clear(labelled_keys):
+    """Drop the named calibrations and refresh, so the panel redraws at once."""
+    try:
+        removed = clear_ceilings([key for _, key in labelled_keys])
+    except store.LockTimeout as exc:
+        print(f"could not clear the calibration: {exc}", file=sys.stderr)
+        return 1
+    for label, key in labelled_keys:
+        outcome = ("calibration removed, back to dollars" if key in removed
+                   else "was not calibrated, nothing to remove")
+        print(f"{label}: {outcome}")
+
+    # state.json still carries the percentages this run just invalidated, and the
+    # panel redraws from the file monitor, so without this the rows would keep
+    # showing them until the next assistant turn.
+    try:
+        with store.exclusive_lock(paths.lock_path()):
+            refresh(session_id="")
+    except store.LockTimeout as exc:
+        print(f"calibration cleared, but the refresh could not run: {exc}",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    setting = [v for v in (args.five_hour, args.week) if v is not None]
+    clearing = [(label, key) for label, key, flag in (
+        ("5h window", CEILINGS["5h window"], args.clear or args.clear_5h),
+        ("week", CEILINGS["week"], args.clear or args.clear_week),
+    ) if flag]
+
+    if not setting and not clearing:
+        parser.error("give at least one of --5h, --week, --clear, --clear-5h "
+                     "or --clear-week")
+    if setting and clearing:
+        # Contradictory in one run, and worse than useless if half-applied:
+        # rejected up front rather than resolved by argument order.
+        parser.error("--clear flags cannot be combined with --5h or --week; "
+                     "run them separately")
+    for value in setting:
+        if not 1.0 <= value <= 100.0:
             parser.error("percentages must be between 1 and 100")
+
+    if clearing:
+        return clear(clearing)
 
     try:
         with store.exclusive_lock(paths.lock_path()):
@@ -45,9 +122,10 @@ def main():
     # config.json — a printed success that was never persisted.
     requested = []
     if args.five_hour is not None:
-        requested.append(("5h window", "window_5h", "ceiling_5h_usd", args.five_hour))
+        requested.append(("5h window", "window_5h", CEILINGS["5h window"],
+                          args.five_hour))
     if args.week is not None:
-        requested.append(("week", "window_7d", "ceiling_7d_usd", args.week))
+        requested.append(("week", "window_7d", CEILINGS["week"], args.week))
 
     for label, window, _, _ in requested:
         if state[window]["usd"] <= 0:

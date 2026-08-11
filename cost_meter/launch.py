@@ -31,6 +31,21 @@ from . import log, paths, store
 # directly would mean repeating that here, and the two would drift.
 WIDGET_TASK = ("run", "--frozen", "widget")
 
+# What actually detaches the panel on a systemd Linux desktop. setsid escapes the
+# process group and the session, but not the cgroup, and terminal emulators put
+# each tab in a transient scope with KillMode=control-group -- so closing the tab
+# that happened to win the launch race killed the panel with it, however detached
+# it was. `--scope` moves the process into a scope of its own and only then execs,
+# which is why the pid we log is still the real one.
+#
+# The unit is deliberately left unnamed. A fixed name reads better in the log, but
+# it collides with any scope a previous panel left behind, and on this path a
+# collision costs the panel; systemd's generated name cannot collide.
+SCOPE_PREFIX = ("systemd-run", "--user", "--scope", "--quiet", "--collect")
+# Long enough for systemd-run to have failed and exited (it takes tens of
+# milliseconds), short enough to be free on a hook that runs once per session.
+SCOPE_WAIT_SECONDS = 0.5
+
 
 def read_pid():
     """The pid the running panel claimed, or None if there is no usable claim.
@@ -76,8 +91,44 @@ def has_display():
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+def systemd_available():
+    """True when this session can put the panel in a transient scope of its own.
+
+    /run/systemd/system is the documented test for "booted with systemd" (see
+    sd_booted(3)); it is a directory only on the real thing, so a container with
+    the binaries but no manager reads as False.
+    """
+    if os.name == "nt":
+        return False
+    return (os.path.isdir("/run/systemd/system")
+            and shutil.which("systemd-run") is not None)
+
+
 def spawn_detached(command, cwd):
-    """Start the panel so it outlives both this hook and the session itself."""
+    """Start the panel so it outlives both this hook and the session itself.
+
+    On a systemd Linux desktop that means a transient scope of the panel's own,
+    because the terminal tab this hook runs in is itself a scope that takes its
+    whole cgroup down with it. Everywhere else, and if the scope will not start,
+    a plainly detached child is the best available and still the old behaviour.
+    """
+    if systemd_available():
+        child = _spawn([*SCOPE_PREFIX, *command], cwd)
+        try:
+            status = child.wait(timeout=SCOPE_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return child  # still running, so the scope took and it is the panel
+        # Exited already. Whether systemd-run could not reach the user manager or
+        # the panel itself died on startup is not knowable from here, so the log
+        # says what happened rather than guessing why, and we try the plain spawn
+        # instead of leaving the user with no panel at all.
+        log.write(f"launch: scope spawn exited immediately (rc {status}), "
+                  f"retrying without a scope")
+    return _spawn(command, cwd)
+
+
+def _spawn(command, cwd):
+    """Detach a child as far as this platform alone allows."""
     kwargs = {
         "cwd": str(cwd),
         "stdin": subprocess.DEVNULL,

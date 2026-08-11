@@ -10,6 +10,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import datetime
 
 import gi
 
@@ -47,6 +48,45 @@ label.warn { color: #f06a5a; font-size: 10px; }
 
 def _fmt_usd(value):
     return "—" if value is None else f"${value:,.2f}"
+
+
+def _fmt_reset(value):
+    """Local `HH:MM` for a block's reset time, or None if there isn't one.
+
+    Local time because that is the clock /usage prints, and the row is only
+    worth having if the two can be read against each other. An unparseable
+    value is dropped rather than shown raw: a broken timestamp on the row would
+    look like a limit resetting at a nonsense time.
+    """
+    epoch = summary.parse_updated_at(value)
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch).strftime("%H:%M")
+
+
+def window_row(window):
+    """The text and style class for one limit row, as (text, class).
+
+    Calibrated rows carry both figures. The percentage alone would mean
+    calibrating traded the dollar amount away — and since the percentage is only
+    ever an estimate against a ceiling you derived yourself, the dollars beside it
+    are the part that is actually measured. The `~` is what marks the estimate;
+    there is no room for the word as well once both numbers are on the row.
+
+    The 5-hour row also names when its block resets; the weekly row carries no
+    such key and is unchanged. The reset time is shown whether or not the row is
+    calibrated, because it is measured rather than estimated — it is the one
+    figure here that can be checked against /usage directly.
+    """
+    usd = _fmt_usd(window.get("usd"))
+    resets = _fmt_reset(window.get("resets_at"))
+    tail = "" if resets is None else f" · {resets}"
+    pct = window.get("pct")
+    if pct is None:
+        # Not calibrated: dollars only, muted, rather than an invented number.
+        return usd + tail, "muted"
+    return (f"{usd} ~{pct} %{tail}",
+            "red" if pct >= RED_AT else "amber" if pct >= AMBER_AT else "green")
 
 
 def _row(grid, index, caption):
@@ -269,16 +309,9 @@ class CostMeter(Gtk.Window):
         context = label.get_style_context()
         for name in LIMIT_CLASSES + ("muted",):
             context.remove_class(name)
-
-        pct = window.get("pct")
-        if pct is None:
-            # Not calibrated yet: show dollars rather than an invented number.
-            label.set_text(_fmt_usd(window.get("usd")))
-            context.add_class("muted")
-            return
-        label.set_text(f"~{pct} % est.")
-        context.add_class("red" if pct >= RED_AT else
-                          "amber" if pct >= AMBER_AT else "green")
+        text, style = window_row(window)
+        label.set_text(text)
+        context.add_class(style)
 
     def on_click(self, _widget, event):
         if event.button == 1:

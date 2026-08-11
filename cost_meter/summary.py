@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from .pricing import UnknownModel, price_event
 
-WINDOW_5H_SECONDS = 5 * 3600
+BLOCK_5H_SECONDS = 5 * 3600
 WINDOW_7D_SECONDS = 7 * 86400
 
 # How old state.json may get before the widget stops presenting its numbers as
@@ -27,6 +27,39 @@ def _pct(usd, ceiling):
     if not ceiling:
         return None
     return round(100.0 * usd / ceiling)
+
+
+def current_block(timestamps, now_epoch):
+    """The open 5-hour limit block as `(start, end)`, or None if none is open.
+
+    The 5-hour limit is not a trailing five hours. A block opens on the first
+    message sent after the previous block expired and then runs a fixed five
+    hours from that message, which is why /usage names a reset time instead of
+    counting down continuously. Spend in the previous block stops counting the
+    moment this one opens, even though it is still only minutes old.
+
+    The chain is walked from the oldest message forward, because where a block
+    starts depends on every block before it: the most recent gap alone does not
+    place it. Two messages 30 minutes apart are one block, not two.
+
+    `timestamps` is sorted here rather than assumed sorted. With several sessions
+    live, whichever hook fires first absorbs everybody's new messages, so
+    events.jsonl is append-ordered, not time-ordered.
+
+    Pruning can in principle shift the chain, if the event it drops was within
+    five hours of the oldest one kept. It cannot reach the open block in
+    practice: any gap longer than five hours re-anchors the chain, and PRUNE_DAYS
+    is far enough back that a night's break always intervenes.
+    """
+    start = end = None
+    for ts in sorted(timestamps):
+        if end is None or ts >= end:
+            start, end = ts, ts + BLOCK_5H_SECONDS
+    if end is None or now_epoch >= end:
+        # Either nothing has been sent, or the last block has already reset and
+        # the next one does not exist until the next message opens it.
+        return None
+    return start, end
 
 
 def new_turn_ids(events, session_id, mark):
@@ -136,6 +169,7 @@ def format_age(seconds):
 
 def build_state(events, pricing, session_id, new_ids, now_epoch, calibration):
     midnight = _local_midnight(now_epoch)
+    block = current_block([event[0] for event in events], now_epoch)
     unknown = set()
 
     session_usd = today_usd = usd_5h = usd_7d = last_turn_usd = 0.0
@@ -154,7 +188,7 @@ def build_state(events, pricing, session_id, new_ids, now_epoch, calibration):
                 last_turn_usd += usd
         if ts >= midnight:
             today_usd += usd
-        if ts >= now_epoch - WINDOW_5H_SECONDS:
+        if block is not None and block[0] <= ts < block[1]:
             usd_5h += usd
         if ts >= now_epoch - WINDOW_7D_SECONDS:
             usd_7d += usd
@@ -167,6 +201,11 @@ def build_state(events, pricing, session_id, new_ids, now_epoch, calibration):
         "window_5h": {
             "usd": round(usd_5h, 4),
             "pct": _pct(usd_5h, calibration.get("ceiling_5h_usd")),
+            # When the block resets, so the row can say it outright. This is the
+            # figure /usage puts on screen, and having it here is what lets a
+            # calibration be checked against /usage rather than guessed at.
+            "resets_at": (None if block is None else
+                          datetime.fromtimestamp(block[1], timezone.utc).isoformat()),
         },
         "window_7d": {
             "usd": round(usd_7d, 4),
