@@ -40,9 +40,12 @@ IS_WINDOWS = os.name == "nt"
 # on the timeout dies before it ever reaches the spawn. Stop's is bounded by
 # real work: a full rescan of the transcripts is well under a second.
 #
-# The wrappers differ by platform because Claude Code runs the registered
-# command directly: a .sh is not executable on Windows and a .cmd is not on
-# Linux. What they wrap is identical -- the same two pixi tasks.
+# The wrappers differ by platform, but not because the shell demands it --
+# Claude Code runs both through bash, which will happily start a .cmd. They
+# differ because their contents have to: only the Windows one needs the PATH
+# repair that finds pixi for a session started before pixi was installed, and
+# spawning detached is expressed completely differently by the two. What they
+# wrap is identical -- the same two pixi tasks.
 _SUFFIX = ".cmd" if IS_WINDOWS else ".sh"
 HOOKS = (
     ("Stop", Path("hooks") / ("tally" + _SUFFIX), 20, None),
@@ -80,26 +83,67 @@ def autostart_path():
     return base / "autostart" / AUTOSTART_NAME
 
 
+def _shell_command(path):
+    """`path` spelled as a command the shell Claude Code uses can actually run.
+
+    Claude Code does not execute a registered hook itself. It hands the string
+    to `bash -c` -- on Windows too, through Git Bash -- and that costs two
+    things a bare str(path) does not survive.
+
+    A backslash is an escape character there, so a native Windows path is
+    swallowed separator by separator: C:\\Users\\...\\launch_widget.cmd arrives
+    as C:Users...launch_widget.cmd and the hook dies with `command not found`.
+    Nothing surfaces that. The hook error is non-blocking and both wrappers
+    exit 0 by design, so the only symptom is a panel that never appears and
+    numbers that stop moving. Windows accepts forward slashes anywhere it takes
+    a path, so as_posix() names the same file in a spelling both shells read
+    literally.
+
+    Quoted because whitespace splits a word: under "Program Files", or any
+    "My Projects" directory, the shell would otherwise run the first half of
+    the path and pass the rest as arguments. That fault is not Windows-specific
+    and neither is the fix.
+    """
+    return f'"{path.as_posix()}"'
+
+
+def _for_comparison(text):
+    """`text` reduced to the form ownership is decided in.
+
+    Our own entries are quoted and posix-spelled, but the entries that most
+    need recognising are the ones we are replacing: bare native paths written
+    by every earlier version of this installer, including the Windows ones the
+    shell could not run. Both spellings have to reduce to the same string, or
+    re-running the installer adds the working entry beside the broken one and
+    leaves two live Stop hooks.
+    """
+    text = text.strip()
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        text = text[1:-1]
+    if IS_WINDOWS:
+        # Separator- and case-insensitive, both because Windows is. A backslash
+        # is left alone on Linux, where it is a legal (if perverse) character
+        # in a filename rather than a separator.
+        text = text.replace("\\", "/").lower()
+    return text
+
+
 def _owned_by_us(command, root):
     """True when `command` is one of our scripts, wherever the repo now lives.
 
     Deliberately broader than the exact commands we install: it also matches a
     previous layout's entry (tally.py was registered directly before the pixi
-    wrapper existed) and a copy of the repo at a path we are moving away from.
-    Those are the entries that must be replaced rather than added alongside.
-
-    Compared case-insensitively on Windows, where paths are: a repo moved
-    between two spellings of the same directory would otherwise leave the old
-    Stop hook registered next to the new one, and two live Stop hooks are
-    exactly what this function exists to prevent -- the second finds no new
+    wrapper existed), a spelling an older installer used, and a copy of the
+    repo at a path we are moving away from. Those are the entries that must be
+    replaced rather than added alongside -- two live Stop hooks are exactly
+    what this function exists to prevent, since the second finds no new
     messages and overwrites `last turn` with $0.00.
     """
     if not isinstance(command, str):
         return False
-    root = str(root)
-    if IS_WINDOWS:
-        command, root = command.lower(), root.lower()
-    return command == root or command.startswith(root + os.sep)
+    command, root = _for_comparison(command), _for_comparison(str(root))
+    separator = "/" if IS_WINDOWS else os.sep
+    return command == root or command.startswith(root + separator)
 
 
 def _strip_ours(settings, root, events):
@@ -143,7 +187,7 @@ def _strip_ours(settings, root, events):
 
 def plan(root):
     """The commands we would register, in settings order."""
-    return [(event, str(root / script), timeout, matcher)
+    return [(event, _shell_command(root / script), timeout, matcher)
             for event, script, timeout, matcher in HOOKS]
 
 

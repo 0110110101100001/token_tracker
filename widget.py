@@ -64,6 +64,20 @@ class CostMeter(Gtk.Window):
         super().__init__(title="Claude cost meter")
         self.set_decorated(False)
         self.set_keep_above(True)
+        # UTILITY is what keeps the panel out of the Windows taskbar, and the
+        # skip hints below are not: GDK's win32 backend accepts
+        # set_skip_taskbar_hint() and does nothing with it, so the panel sat in
+        # the taskbar for its whole run while this code read as though it had
+        # opted out. UTILITY is the hint win32 turns into WS_EX_TOOLWINDOW,
+        # which is the documented condition for no taskbar button (and drops it
+        # from Alt-Tab too, which a panel wants anyway). DOCK would describe
+        # this window better but earns neither on that backend.
+        #
+        # Set on both platforms rather than behind an os.name test: on X11 it is
+        # the accurate type for a floating panel and the skip hints there
+        # already did this job, so nothing about Linux changes.
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        # Still asked for, because they are what X11 acts on.
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
         self.set_resizable(False)

@@ -79,12 +79,12 @@ with your own path:
 
 ```json
 "Stop": [
-  {"hooks": [{"type": "command", "command": "<repo>/hooks/tally.sh", "timeout": 20}]}
+  {"hooks": [{"type": "command", "command": "\"<repo>/hooks/tally.sh\"", "timeout": 20}]}
 ],
 "SessionStart": [
   {
     "matcher": "startup|resume|clear|compact",
-    "hooks": [{"type": "command", "command": "<repo>/launch_widget.sh", "timeout": 30}]
+    "hooks": [{"type": "command", "command": "\"<repo>/launch_widget.sh\"", "timeout": 30}]
   }
 ]
 ```
@@ -97,11 +97,26 @@ first run after a reboot pays for pixi starting, an interpreter booting and a
 virus scanner reading a few hundred megabytes of environment, and a hook killed
 on its timeout dies before it ever reaches the spawn.
 
-On Windows the very same entries name `hooks\tally.cmd` and
-`launch_widget.cmd`, because Claude Code runs the registered command directly
-and a `.sh` is not executable there. The installer picks the pair that matches
-the platform it is run on; what the two wrap is identical, being the same pixi
-tasks.
+The path is written with forward slashes and in quotes on both platforms, and
+neither is cosmetic. Claude Code does not run a registered hook itself — it
+hands the string to `bash -c`, on Windows too, through Git Bash. A backslash is
+an escape character there, so a native Windows path arrives with every
+separator eaten (`C:UsersyouCode...launch_widget.cmd`) and the hook dies with
+`command not found`. Windows accepts forward slashes wherever it takes a path,
+so the one spelling suits both shells. The quotes are for the other half of the
+same problem: unquoted, a repo under `Program Files` or any `My Projects`
+directory would have the shell run the first half of its own path and pass the
+rest as arguments.
+
+Neither failure announces itself — a hook error is non-blocking and both
+wrappers exit 0 by design — so the whole symptom is a panel that never appears
+and numbers that stop moving.
+
+On Windows the entries name `hooks/tally.cmd` and `launch_widget.cmd`. The
+installer picks the pair that matches the platform it is run on; what the two
+wrap is identical, being the same pixi tasks. They differ because their
+contents must: only the Windows pair needs the `PATH` repair that finds pixi
+for a session started before pixi was installed.
 
 Two flags worth knowing:
 
@@ -155,6 +170,12 @@ a black window and a `conhost.exe` on screen beside the panel for its whole life
 `pythonw` is the same interpreter built as a GUI-subsystem binary. The cost is
 that it discards stdout and stderr, which is why `pixi run widget --selftest`
 still goes through `python`.
+
+The panel keeps itself out of the taskbar (and out of Alt-Tab on Windows) by
+asking to be a `UTILITY` window, not by `set_skip_taskbar_hint`, which GDK's
+win32 backend accepts and ignores. On X11 the skip hints do the job and are
+still set; `tests/test_widget.py` checks the outcome on whichever platform it
+runs on rather than trusting either hint.
 
 Stop it with right click → *Quit*.
 
@@ -352,8 +373,12 @@ platforms run the same check rather than a pair of twins that can drift.
   started something, and the problem is further along), `launch: already
   running` (it decided a panel was up), and `launch: failed` with the exception.
   **No line at all means the hook never ran** — check that `SessionStart` in
-  `~/.claude/settings.json` carries its `matcher`, and re-run
-  `pixi run install-hooks` if it does not.
+  `~/.claude/settings.json` carries its `matcher`, and that its `command` is a
+  quoted forward-slash path rather than a native Windows one. A backslash path
+  is eaten by the shell Claude Code runs hooks in, which reports
+  `command not found` where only the session transcript can see it. Re-run
+  `pixi run install-hooks` for either; it recognises and replaces the old
+  entry rather than adding a second one.
   On Windows the other usual cause is `pixi` not being on `PATH` for the hook,
   because Claude Code was started before pixi was installed and a `PATH` change
   does not reach a running process. Restart Claude Code. That one also leaves no
@@ -364,3 +389,9 @@ platforms run the same check rather than a pair of twins that can drift.
   run by `python.exe` instead of `pythonw.exe`. Check the `widget` task under
   `[target.win-64.tasks]` in `pixi.toml`. A detached process has no console to
   inherit, and Windows gives any console-subsystem program one of its own.
+- **A taskbar button for the panel, on Windows** — the `UTILITY` type hint in
+  `widget.py` is not reaching the window. `pixi run test` says so directly:
+  `test_windows_gives_it_no_taskbar_button` reads the real window back and fails
+  if it is not a tool window. Note that changing the hint to the more accurate
+  `DOCK` reintroduces exactly this, since win32 gives `DOCK` no tool-window
+  style.

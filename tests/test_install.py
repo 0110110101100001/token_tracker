@@ -22,10 +22,12 @@ def expected(event):
 
     Derived from install.HOOKS rather than spelled out, because the wrapper
     names differ by platform and a hardcoded "hooks/tally.sh" would only ever
-    test one of them.
+    test one of them. Through _shell_command for the same reason: the spelling
+    a hook is registered in is that function's business, and duplicating it
+    here would let the two drift.
     """
-    return [str(ROOT / script) for name, script, _, _ in install.HOOKS
-            if name == event]
+    return [install._shell_command(ROOT / script)
+            for name, script, _, _ in install.HOOKS if name == event]
 
 
 def groups(settings, event):
@@ -251,6 +253,47 @@ class AutostartOwnershipTest(unittest.TestCase):
                     os.environ[var] = previous
 
 
+class ShellCommandTest(unittest.TestCase):
+    """The spelling a hook is registered in, which is not free-form.
+
+    Claude Code does not execute the registered command itself: it hands the
+    string to `bash -c`, on Windows as well as Linux. Everything here is about
+    surviving that shell, and the regression it covers is a real one -- both
+    hooks were dead on Windows for exactly this reason, reporting
+
+        /usr/bin/bash: line 1: C:UsersLenkaDesktop...launch_widget.cmd:
+        command not found
+
+    with a non-blocking exit 127. Nothing on screen said so: a hook error is
+    non-blocking, and both wrappers exit 0 by design, so the only symptom was a
+    panel that never appeared and numbers that stopped moving.
+    """
+
+    def test_a_registered_command_carries_no_backslashes(self):
+        # The regression itself. Bash reads a backslash as an escape, so a
+        # native Windows path arrives with every separator eaten.
+        for _, command, _, _ in install.plan(ROOT):
+            self.assertNotIn("\\", command)
+
+    def test_a_registered_command_still_names_the_script(self):
+        # Cheap guard against the above being satisfied by mangling the path.
+        for (_, command, _, _), (_, script, _, _) in zip(install.plan(ROOT),
+                                                         install.HOOKS):
+            self.assertIn(script.name, command)
+            self.assertIn((ROOT / script).as_posix(), command)
+
+    def test_a_path_with_spaces_is_one_word_to_the_shell(self):
+        # "C:/Program Files/..." or a "My Projects" directory: unquoted, the
+        # shell would run the first half of the path with the rest as
+        # arguments. Distinct from the backslash fault, same shell.
+        root = (Path("C:/opt/cost meter") if install.IS_WINDOWS
+                else Path("/opt/cost meter"))
+        for _, command, _, _ in install.plan(root):
+            self.assertTrue(command.startswith('"') and command.endswith('"'),
+                            f"{command!r} is not quoted")
+            self.assertNotIn('"', command[1:-1])
+
+
 class ApplyTest(unittest.TestCase):
     def test_registers_both_hooks(self):
         settings = {}
@@ -312,6 +355,17 @@ class ApplyTest(unittest.TestCase):
         # and overwrite last_turn with 0.00 -- so the old entry must be replaced,
         # not accompanied.
         settings = settings_with(str(ROOT / "tally.py"))
+        install.apply(settings, ROOT)
+        self.assertEqual(commands(settings, "Stop"), expected("Stop"))
+
+    def test_replaces_the_entry_the_shell_could_not_run(self):
+        # What every Windows install wrote before the fix, and what a Linux one
+        # wrote unquoted: the same script, spelled the way the shell chokes on.
+        # It has to be recognised as ours and replaced -- an installer that
+        # merely added the working spelling beside it would leave two live Stop
+        # hooks, and the second finds no new messages and overwrites `last
+        # turn` with $0.00.
+        settings = settings_with(str(ROOT / "hooks" / ("tally" + install._SUFFIX)))
         install.apply(settings, ROOT)
         self.assertEqual(commands(settings, "Stop"), expected("Stop"))
 
