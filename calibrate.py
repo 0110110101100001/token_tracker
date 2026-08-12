@@ -21,10 +21,9 @@ Usage (the bare -- keeps pixi from reading --5h as one of its own flags):
 import argparse
 import sys
 
-from cost_meter import paths, store
+from cost_meter import ceilings, paths, store
+from cost_meter.ceilings import CEILINGS
 from tally import refresh
-
-CEILINGS = {"5h window": "ceiling_5h_usd", "week": "ceiling_7d_usd"}
 
 
 def build_parser():
@@ -41,46 +40,6 @@ def build_parser():
     parser.add_argument("--clear-week", dest="clear_week", action="store_true",
                         help="forget the weekly calibration only")
     return parser
-
-
-def clear_ceilings(keys):
-    """Remove `keys` from config.json. Returns the ones that were really set.
-
-    Read-modify-write under the lock, like every other writer of this file: the
-    panel keeps its window position here too, and a wholesale rewrite would drop
-    whichever value this side does not know about.
-
-    Clearing something already clear is not an error. The flag names the state
-    you want, not a transition you have to be mid-way through, which is what
-    makes it safe to run twice.
-    """
-    with store.update_json_locked(paths.config_path(), paths.lock_path()) as config:
-        return [key for key in keys if config.pop(key, None) is not None]
-
-
-def clear(labelled_keys):
-    """Drop the named calibrations and refresh, so the panel redraws at once."""
-    try:
-        removed = clear_ceilings([key for _, key in labelled_keys])
-    except store.LockTimeout as exc:
-        print(f"could not clear the calibration: {exc}", file=sys.stderr)
-        return 1
-    for label, key in labelled_keys:
-        outcome = ("calibration removed, back to dollars" if key in removed
-                   else "was not calibrated, nothing to remove")
-        print(f"{label}: {outcome}")
-
-    # state.json still carries the percentages this run just invalidated, and the
-    # panel redraws from the file monitor, so without this the rows would keep
-    # showing them until the next assistant turn.
-    try:
-        with store.exclusive_lock(paths.lock_path()):
-            refresh(session_id="")
-    except store.LockTimeout as exc:
-        print(f"calibration cleared, but the refresh could not run: {exc}",
-              file=sys.stderr)
-        return 1
-    return 0
 
 
 def main(argv=None):
@@ -106,7 +65,8 @@ def main(argv=None):
             parser.error("percentages must be between 1 and 100")
 
     if clearing:
-        return clear(clearing)
+        return ceilings.clear(clearing, refresh,
+                              warn=lambda line: print(line, file=sys.stderr))
 
     try:
         with store.exclusive_lock(paths.lock_path()):
