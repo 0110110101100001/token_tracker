@@ -60,6 +60,10 @@ launch = "python -m cost_meter.launch"
 # own: pixi run calibrate -- --5h 42
 calibrate = "python calibrate.py"
 
+# Whether a new Claude Code session may open the panel. Same bare `--` as
+# calibrate: pixi run autolaunch -- --off | --on | --status
+autolaunch = "python -m cost_meter.autolaunch"
+
 # Register the Stop and SessionStart hooks in ~/.claude/settings.json.
 install-hooks = "python -m cost_meter.install"
 
