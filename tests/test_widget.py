@@ -22,7 +22,7 @@ import unittest
 from datetime import datetime
 
 import widget
-from cost_meter import launch
+from cost_meter import autolaunch, launch, paths, roll, store
 
 HAS_DISPLAY = launch.has_display()
 
@@ -66,6 +66,50 @@ def own_hwnds_titled(title):
 
     user32.EnumWindows(visit, None)
     return found
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class AutolaunchToggleTest(unittest.TestCase):
+    """The menu item writes the key the SessionStart hook actually reads.
+
+    Both halves of the toggle are a couple of lines of lambda in `show_menu`,
+    and getting them wrong fails silently in the worst direction: a menu that
+    reads `Resume auto-launch` while every new session keeps opening the panel
+    anyway. The panel's config writer is also the one that has to preserve the
+    window position and the ceilings sharing that file.
+    """
+
+    def setUp(self):
+        self.window = widget.CostMeter()
+        # No main loop here, so the close handler would turn teardown into a
+        # Gtk-CRITICAL; the config keys go back as they were because this class
+        # shares one COST_METER_HOME with the rest of the run.
+        self.window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(self.window.destroy)
+        self.addCleanup(self.window.update_config,
+                        lambda c: c.pop("widget_position", None))
+        self.addCleanup(self.window.set_autolaunch_paused, False)
+
+    def config(self):
+        return store.read_json(paths.config_path(), default={}) or {}
+
+    def test_the_toggle_pauses_and_resumes_what_the_hook_reads(self):
+        self.window.set_autolaunch_paused(True)
+        self.assertTrue(autolaunch.paused())
+        self.window.set_autolaunch_paused(False)
+        self.assertFalse(autolaunch.paused())
+
+    def test_toggling_leaves_the_window_position_alone(self):
+        self.window.update_config(
+            lambda c: c.__setitem__("widget_position", [7, 9]))
+        self.window.set_autolaunch_paused(True)
+        self.window.set_autolaunch_paused(False)
+        self.assertEqual(self.config().get("widget_position"), [7, 9])
+
+    def test_resuming_leaves_no_key_behind(self):
+        self.window.set_autolaunch_paused(True)
+        self.window.set_autolaunch_paused(False)
+        self.assertNotIn(autolaunch.KEY, self.config())
 
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")
@@ -181,6 +225,58 @@ class ResetTimeTest(unittest.TestCase):
         self.assertEqual(
             widget.window_row({"usd": 1.0, "pct": 5, "resets_at": "not a time"})[0],
             "$1.00 ~5 %")
+
+
+class TurnTextTest(unittest.TestCase):
+    """The `last turn` row, which counts up from zero on every turn.
+
+    A delta, not a running total, so it is the one row whose text has to tell
+    `$0.00 on the way up` apart from `no turn recorded` -- the same em dash
+    distinction the window rows make, but here it lasts only as long as the
+    first frame of a roll.
+    """
+
+    def test_a_turn_carries_its_sign(self):
+        self.assertEqual(widget.turn_text(4.2), "+$4.20")
+
+    def test_no_turn_recorded_is_a_dash(self):
+        self.assertEqual(widget.turn_text(0.0), "—")
+        self.assertEqual(widget.turn_text(None), "—")
+
+    def test_the_start_of_a_count_is_zero_dollars_not_a_dash(self):
+        # The first frame of a roll draws exactly 0.0. Falling back to the dash
+        # there would blank the row for a frame before the digits moved, which
+        # is the blink this animation exists to avoid.
+        self.assertEqual(widget.turn_text(0.0, moving=True), "+$0.00")
+
+    def test_a_row_left_at_zero_by_a_finished_roll_is_still_a_dash(self):
+        self.assertEqual(widget.turn_text(0.0, moving=False), "—")
+
+
+class RollStyleTest(unittest.TestCase):
+    """A roll changes the figure and nothing else about how the row looks.
+
+    The digits used to be drawn dimmer while they moved, as a stand-in for
+    motion blur; on screen that read as the row blinking. The classes and the
+    CSS rules behind it are gone, and this is what keeps them from creeping
+    back in -- a stray `label.roll1` would be invisible in review and obvious
+    on the panel.
+    """
+
+    def test_no_dimming_classes_survive_in_the_stylesheet(self):
+        css = widget.CSS.decode("utf-8")
+        self.assertNotIn("roll1", css)
+        self.assertNotIn("roll2", css)
+        self.assertNotIn("opacity", css)
+
+    def test_a_frame_carries_a_value_and_nothing_else(self):
+        # draw_row takes the key alone now, and reads the figure back off the
+        # roll; a frame handing over a second field would mean it had grown a
+        # visual channel again.
+        rolling = roll.Roll(min_delta=0.01)
+        rolling.retarget({"today": 10.0})
+        rolling.retarget({"today": 48.0})
+        self.assertEqual(rolling.frame(0.5)["today"], roll.value_at(10.0, 48.0, 0.5))
 
 
 if __name__ == "__main__":
