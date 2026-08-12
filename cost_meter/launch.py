@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import sys
 
-from . import log, paths, store
+from . import autolaunch, log, paths, store
 
 # Nested `pixi run` rather than a direct `python widget.py`, deliberately: the
 # task owns GDK_BACKEND on Linux and picks pythonw over python on Windows, and
@@ -155,6 +155,11 @@ def _spawn(command, cwd):
 
 def main(argv=None):
     try:
+        if autolaunch.paused():
+            # First, before the liveness probe: a hook the user has switched off
+            # should do nothing at all, not take locks to decide it.
+            log.write("launch: paused")
+            return 0
         if panel_is_running():
             # Already up -- including when the user closed it deliberately
             # mid-session, which stays closed until the next session starts.

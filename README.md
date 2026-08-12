@@ -8,7 +8,11 @@ It runs on **Linux and Windows**. It counts **only the Claude Code work done on
 the machine it runs on**, which is the first thing to understand about it — see
 [What it counts](#what-it-counts).
 
-## Quick start
+**Jump to:** [Install](#install) · [Calibrate](#calibrate) ·
+[Un-calibrate](#un-calibrate) · [Uninstall](#uninstall) ·
+[Troubleshooting](#troubleshooting)
+
+## Install
 
 You need [pixi](https://pixi.sh) and Claude Code. Nothing else has to be
 installed system-wide: pixi supplies Python and the GTK 3 bindings itself, so in
@@ -45,9 +49,99 @@ was made — so the hooks run, find no pixi, and exit 0 exactly as they are
 designed to. On Linux you only need it if you installed pixi from the same shell
 Claude Code was started from.
 
+Optionally, also bring the panel up on login rather than only per Claude Code
+session:
+
+```bash
+./install.sh --autostart      # Linux;  install.cmd --autostart on Windows
+```
+
 There is **no macOS support**. Nothing here is hostile to it any more — the file
 lock is portable and the entry points are Python — but no `osx-*` platform has
 been solved or smoke-tested, so it is not claimed.
+
+What the installer writes, and why the hook paths look the way they do, is in
+[Install, in detail](#install-in-detail).
+
+## Calibrate
+
+Fresh out of the box the **5h window** and **week** rows show dollars only. The
+percentages appear once you calibrate, which takes two commands:
+
+1. Run `/usage` inside Claude Code and read the percentage it reports for each
+   window.
+2. Feed those percentages back in — `<pct>` is a number between 1 and 100:
+
+   ```bash
+   pixi run calibrate -- --5h <pct>
+   pixi run calibrate -- --week <pct>
+   ```
+
+The bare `--` matters: without it pixi reads `--5h` as one of its own flags. Each
+run divides your currently-recorded spend by the percentage you gave it, stores
+the resulting ceiling in `data/config.json`, and redraws the panel immediately.
+
+Before trusting a `--5h` calibration, check the reset time on the panel's 5h row
+against the one `/usage` prints. Why that check matters, and when to
+re-calibrate, is under [Calibration](#calibration).
+
+## Un-calibrate
+
+To undo it — a mistyped percentage, the wrong window read, or you would rather
+just see dollars:
+
+```bash
+pixi run calibrate -- --clear         # both windows
+pixi run calibrate -- --clear-5h      # or one at a time
+pixi run calibrate -- --clear-week
+```
+
+The row goes straight back to a dollar figure with no percentage. Each run
+reports what it actually removed, clearing something that was never calibrated is
+not an error, and it is safe to run twice.
+
+## Keep the panel closed
+
+By default every Claude Code session opens the panel if one is not already up —
+including a panel you closed on purpose ten minutes earlier. To make closing it
+stick:
+
+```bash
+pixi run autolaunch -- --off      # sessions stop opening the panel
+pixi run autolaunch -- --on       # they open it again
+pixi run autolaunch -- --status   # which of the two is in force
+```
+
+The panel's own right-click menu carries the same toggle, as **Pause
+auto-launch** / **Resume auto-launch**.
+
+Pausing suspends the launch and nothing else. **Recording continues** — the
+`Stop` hook still prices every turn, so a paused week leaves no gap in the
+figures and they are all there when you bring the panel back. A panel already on
+screen stays up; pausing is a statement about the next session, not this one. And
+`pixi run widget` still works, so you can have the panel when you want it without
+turning the automatic launch back on.
+
+`pixi run launch` is the one thing a pause does stop, deliberately: it *is* the
+automatic launch — the hook runs that exact command — so it obeys the flag and
+logs `launch: paused` rather than starting a panel. Start one by hand with
+`pixi run widget` (foreground) or `./run_widget.sh` (`run_widget.cmd` on
+Windows).
+
+Do not confuse this with `install.sh --autostart`, which is about the panel
+starting when you *log in*. The two are independent: a paused auto-launch does
+not stop the login entry, and removing the login entry does not stop sessions
+opening the panel.
+
+## Uninstall
+
+```bash
+./install.sh --uninstall      # Linux;  install.cmd --uninstall on Windows
+```
+
+That removes both hooks from `~/.claude/settings.json` and the autostart entry
+if you made one. Your ledger is untouched — delete `data/` as well for a full
+reset (see [Files](#files)).
 
 ## What it counts
 
@@ -127,6 +221,49 @@ Cost is computed from the same token counts Claude Code already writes to
 its own transcript files under `~/.claude/projects/`; the tool reads those,
 prices each assistant message, and keeps a rolling ledger of the result.
 
+### Rolling figures
+
+All five value rows roll to their new figure rather than snapping to it: slow
+start, fast middle, slow settle. It is there so a turn that cost $4 and a turn
+that cost $0.04 stop looking alike; without it the number is simply different
+next time you glance at it, and nothing draws the eye to the fact that anything
+was added.
+
+The four cumulative rows — **session**, **today**, **5h window**, **week** —
+roll from their previous total. **last turn** is a delta rather than a running
+total, so it counts up **from zero** on every turn instead: the distance between
+what this turn cost and what the previous one cost is not a quantity anybody is
+watching, and rolling between the two would run the row *downwards* to announce
+a cheap turn after an expensive one. Counting from zero also means the figures
+on the way up mean something on their own — what this turn has cost so far. A
+turn that costs the same as the one before it still counts up again, because two
+turns costing the same cent are still two turns; what marks a turn as new is
+`state.json` being rewritten, not the figure changing.
+
+The roll lasts **one second plus 25 ms for every dollar it covers**, so $40
+added takes two seconds and a few cents take barely more than the base second.
+A fixed duration would make the expensive turn — the one worth watching — the
+one that blurs past fastest. The length is set from the longest of the five
+rows, since they share a clock, and a falling row (a 5-hour block resetting)
+takes as long as a rising one. Nothing about the row dims or fades while it
+moves: only the figure changes.
+
+What deliberately does **not** roll:
+
+- **the percentage and the reset time** on a limit row. They hold still while
+  the dollars beside them move: the percentage is a rounded estimate against a
+  ceiling you derived yourself, and it is the least measured thing on the panel.
+- **anything, while the state is stale.** Stale figures are not being presented
+  as current, and rolling them would say the opposite. They land on their last
+  known values and stay put.
+- **the first paint.** Startup is not a change, and rolling up from zero would
+  claim one that never happened.
+
+Only genuinely new work animates, so the 60-second staleness poll re-reading the
+same `state.json` does not re-run the animation, and a move smaller than a cent
+is set outright. Nothing about the row's size changes, only the value — a
+changing row height would re-anchor the whole panel on every turn.
+
 ## What the graphical session has to provide
 
 The panel is an X11 client on Linux, which is why the pixi task sets
@@ -186,17 +323,11 @@ wrap is identical, being the same pixi tasks. They differ because their
 contents must: only the Windows pair needs the `PATH` repair that finds pixi
 for a session started before pixi was installed.
 
-Two flags worth knowing:
-
-```bash
-./install.sh --autostart    # also start the panel on login, not just per session
-./install.sh --uninstall    # remove both hooks and the autostart entry again
-```
-
-On Windows that is `install.cmd --autostart` and `install.cmd --uninstall`.
-`--autostart` writes an XDG `.desktop` entry on Linux and a `.cmd` in your
-Startup folder on Windows; `--uninstall` removes it again, but only after
-reading it back and confirming it launches *this* checkout.
+The two flags from [Install](#install) and [Uninstall](#uninstall) work on the
+same file. `--autostart` writes an XDG `.desktop` entry on Linux and a `.cmd` in
+your Startup folder on Windows; `--uninstall` removes both hooks and that entry
+again, but only after reading it back and confirming it launches *this*
+checkout.
 
 If you move or rename the repo, re-run `pixi run install-hooks`. It recognises
 its own stale entries and replaces them, which matters: two live `Stop` hooks
@@ -227,7 +358,10 @@ is not — the task runs `pythonw`, which has nowhere to write them (see below);
 use `pixi run python widget.py` when you want the output.
 
 `pixi run launch` is what the SessionStart hook ends up running, through
-`launch_widget.sh` or `launch_widget.cmd`. `run_widget.sh` / `run_widget.cmd`
+`launch_widget.sh` or `launch_widget.cmd`. It is also the half that
+[can be paused](#keep-the-panel-closed), so a panel you closed stays closed; the
+hook then logs `launch: paused` and does nothing else, and `pixi run widget`
+still brings the panel up by hand. `run_widget.sh` / `run_widget.cmd`
 start the panel in the foreground from outside the pixi environment, which is
 what an autostart entry wants.
 
@@ -305,22 +439,9 @@ rows show dollar amounts only, with no percentage: showing no number is the
 honest answer when the real ceiling is unknown, and inventing one would be
 worse than showing nothing.
 
-To calibrate:
-
-1. Run `/usage` inside Claude Code and read the percentage it reports for
-   each window.
-2. Feed those percentages back in:
-
-   ```bash
-   pixi run calibrate -- --5h <pct>
-   pixi run calibrate -- --week <pct>
-   ```
-
-   The bare `--` matters: without it pixi reads `--5h` as one of its own flags.
-
-   Each flag derives a ceiling from your currently-recorded spend divided by
-   the reported percentage, and stores it in `data/config.json`. From then
-   on the corresponding row shows a `%` alongside the dollar figure.
+The commands themselves are up top, under [Calibrate](#calibrate) and
+[Un-calibrate](#un-calibrate). What follows is when to run them and what the
+numbers mean.
 
 **Check the reset time before you trust a `--5h` calibration.** The panel's 5h
 row names the time its block resets; `/usage` names the same thing. If they
@@ -333,21 +454,9 @@ ceiling is a ratio, so it is only as good as the pair of numbers it came from.
 Calibrating twice inside one block should give the same ceiling both times; if it
 doesn't, something upstream of the ratio is wrong.
 
-To undo it — because you mistyped a percentage, read the wrong window, or would
-rather just see dollars:
-
-```bash
-pixi run calibrate -- --clear         # both windows
-pixi run calibrate -- --clear-5h      # or one at a time
-pixi run calibrate -- --clear-week
-```
-
-That removes the stored ceiling and the row goes back to a dollar figure with no
-percentage. It reports what it actually removed, and clearing what was never
-calibrated is not an error, so it is safe to run twice. A clear cannot be
-combined with a `--5h` or `--week` in the same run: the two contradict each
-other, and the run is rejected before anything is read or written rather than
-resolved by argument order.
+A clear cannot be combined with a `--5h` or `--week` in the same run: the two
+contradict each other, and the run is rejected before anything is read or
+written rather than resolved by argument order.
 
 Spend is measured in USD-equivalent rather than raw tokens because the
 models draw on the subscription limit unevenly — an Opus token costs the
@@ -447,8 +556,9 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   last run" has to be remembered per session rather than inferred from which
   run happened to append the events. Bookmarks for sessions idle longer than
   the 8-day prune window are dropped.
-- `config.json` — calibrated ceilings (`ceiling_5h_usd`, `ceiling_7d_usd`)
-  and the widget's last window position.
+- `config.json` — calibrated ceilings (`ceiling_5h_usd`, `ceiling_7d_usd`),
+  the widget's last window position, and `autolaunch_paused` when sessions are
+  not allowed to open the panel.
 - `widget.lock` — held exclusively by the running panel for as long as it
   lives. This is how the launcher tells whether one is already up; the kernel
   drops it however the panel dies, including a hard kill.
@@ -458,14 +568,15 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
 - `cost-meter.log` — where the `Stop` hook, the `SessionStart` hook and
   `calibrate.py` record what they swallowed to keep your critical path
   unbroken. The launcher also logs the boring outcomes (`launch: spawned`,
-  `launch: already running`), because a hook that ran and decided to do nothing
-  and a hook that never ran are otherwise indistinguishable.
+  `launch: already running`, `launch: paused`), because a hook that ran and
+  decided to do nothing and a hook that never ran are otherwise
+  indistinguishable.
 
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
-`~/.claude/projects/` from scratch. You lose your calibrated ceilings and
-the saved window position, nothing else — re-run calibration to get the
-percentages back. With the bookmarks gone too, the first turn after a reset
+`~/.claude/projects/` from scratch. You lose your calibrated ceilings, the saved
+window position and a paused auto-launch, nothing else — re-run calibration to
+get the percentages back. With the bookmarks gone too, the first turn after a reset
 reads as the whole session's cost, since there is no earlier mark to measure
 from; it corrects itself on the next turn.
 

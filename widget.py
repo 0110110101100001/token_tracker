@@ -20,7 +20,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from cost_meter import paths, store, summary  # noqa: E402
+from cost_meter import autolaunch, paths, roll, store, summary  # noqa: E402
 
 MARGIN = 24
 WIDTH = 240
@@ -33,6 +33,19 @@ LIMIT_CLASSES = ("green", "amber", "red")
 # writing would never trigger a redraw — which is exactly the case the staleness
 # row exists to report. This timer is the only thing that notices.
 STALE_POLL_SECONDS = 60
+
+# The rolling figures. Every row tweens to its new value instead of snapping to
+# it, so a turn that cost $4 and one that cost $0.04 stop looking identical.
+#
+# The cumulative rows roll from their previous total. `last_turn` is a delta and
+# rolls from zero instead, through `Roll.replay`: the distance between one
+# turn's cost and the next one's is not a quantity worth animating, and it would
+# run the row downwards whenever a cheap turn followed an expensive one.
+ROLL_KEYS = ("last_turn", "session", "today", "window_5h", "window_7d")
+TURN_KEY = "last_turn"
+WINDOW_KEYS = ("window_5h", "window_7d")
+ROLL_FRAME_MS = 16
+ROLL_MIN_DELTA = 0.01
 
 CSS = b"""
 window { background-color: #1e1e22; }
@@ -62,6 +75,19 @@ def _fmt_reset(value):
     if epoch is None:
         return None
     return datetime.fromtimestamp(epoch).strftime("%H:%M")
+
+
+def turn_text(value, moving=False):
+    """The `last turn` row: what the turn cost, or a dash if none is recorded.
+
+    A dash and $0.00 are different claims — nothing recorded against a turn that
+    cost nothing — and while the row counts up they come apart: the first frame
+    of a roll draws exactly zero, and falling back to the dash there would blank
+    the row for a frame before the digits started moving.
+    """
+    if value is None or (not value and not moving):
+        return "—"
+    return f"+{_fmt_usd(value)}"
 
 
 def window_row(window):
@@ -154,9 +180,30 @@ class CostMeter(Gtk.Window):
         self.window_5h = _row(grid, 4, "5h window")
         self.window_7d = _row(grid, 5, "week")
         # Split because `muted` has two owners: staleness for all five rows, and
-        # set_window_row for the two window rows when there is no calibration.
+        # draw_row for the two window rows when there is no calibration.
         self.usd_values = (self.last_turn, self.session, self.today)
         self.window_values = (self.window_5h, self.window_7d)
+        self.rows = {"last_turn": self.last_turn,
+                     "session": self.session, "today": self.today,
+                     "window_5h": self.window_5h, "window_7d": self.window_7d}
+
+        # Animation state. `windows` holds the last two window dicts because a
+        # rolling limit row rebuilds composite text — dollars, percentage and
+        # reset time — from a dollar figure the roll owns and two fields it does
+        # not. `_roll_source` is a single timer for the whole panel, retargeted
+        # in place rather than stacked; `_roll_began` is what progress is
+        # measured from, so a slow frame shortens the roll instead of stretching
+        # it past its duration, and `_roll_ms` is how long this particular roll
+        # was given — it depends on the distance, so it is decided per roll.
+        self.roll = roll.Roll(min_delta=ROLL_MIN_DELTA)
+        self.windows = {key: {} for key in WINDOW_KEYS}
+        # The `updated_at` the turn row was last counted up for. It is what says
+        # a turn is new; the figure cannot, because two turns costing the same
+        # cent are ordinary.
+        self._turn_stamp = None
+        self._roll_source = None
+        self._roll_began = 0.0
+        self._roll_ms = roll.BASE_MS
 
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
@@ -248,18 +295,45 @@ class CostMeter(Gtk.Window):
         if not state:
             return True
 
-        delta = state.get("last_turn_usd") or 0.0
-        self.last_turn.set_text(f"+{_fmt_usd(delta)}" if delta else "—")
-        self.session.set_text(_fmt_usd((state.get("session") or {}).get("usd")))
-        self.today.set_text(_fmt_usd(state.get("today_usd")))
-        self.set_window_row(self.window_5h, state.get("window_5h") or {})
-        self.set_window_row(self.window_7d, state.get("window_7d") or {})
+        # The turn row counts up from zero, and only when the turn is new.
+        # refresh() also runs from the staleness poll, from `Refresh now` and
+        # from __init__, all of which re-read a state.json that has not changed;
+        # `updated_at` moving is what separates those from a turn landing.
+        #
+        # Before retarget, not after: retarget re-bases every leg in flight on
+        # what its row is showing, and the count has to have put zero there
+        # first.
+        stamp = state.get("updated_at")
+        turn_rolling = False
+        if stamp != self._turn_stamp:
+            self._turn_stamp = stamp
+            turn_rolling = self.roll.replay(
+                TURN_KEY, state.get("last_turn_usd") or 0.0)
+
+        for key in WINDOW_KEYS:
+            self.windows[key] = state.get(key) or {}
+        rolling = self.roll.retarget({
+            "session": (state.get("session") or {}).get("usd"),
+            "today": state.get("today_usd"),
+            **{key: self.windows[key].get("usd") for key in WINDOW_KEYS},
+        }) or turn_rolling
 
         # A broken tally exits 0 and simply stops rewriting state.json, so
         # without this the panel would keep showing hours-old figures as though
         # they were current — the same invisible-gap failure the `?` row exists
         # to prevent, reached from the other side.
         stale, age = summary.staleness(state, time.time())
+
+        if stale:
+            # Stale figures are not being presented as current, and rolling them
+            # would say exactly the opposite. They still land on their targets:
+            # old numbers are the best available, they just stop moving.
+            self.roll.cancel()
+            rolling = False
+        for key in ROLL_KEYS:
+            self.draw_row(key)
+        if rolling:
+            self.start_roll()
 
         notes = []
         if stale and age is None:
@@ -275,9 +349,35 @@ class CostMeter(Gtk.Window):
         else:
             self.warning.hide()
 
-        # After set_window_row, which owns `muted` for the uncalibrated case.
+        # After draw_row, which owns `muted` for the uncalibrated case.
         self.set_stale(stale)
         return True
+
+    def start_roll(self):
+        """Run the animation, from now, on the one timer the panel has.
+
+        Restarting the clock rather than adding a source is what makes a second
+        turn landing mid-roll safe: `Roll.retarget` has already re-based the
+        rows in flight on what they are showing, so progress going back to zero
+        continues them from there instead of snapping them backwards.
+
+        The duration is taken here, once, from the distance the rows have left
+        to cover. Read per frame instead it would change under a retarget while
+        the elapsed time it is divided into did not, and progress would jump.
+        """
+        self._roll_began = time.monotonic()
+        self._roll_ms = roll.duration_ms(self.roll.distance())
+        if self._roll_source is None:
+            self._roll_source = GLib.timeout_add(ROLL_FRAME_MS, self.on_roll_frame)
+
+    def on_roll_frame(self):
+        elapsed_ms = (time.monotonic() - self._roll_began) * 1000.0
+        for key in self.roll.frame(elapsed_ms / self._roll_ms):
+            self.draw_row(key)
+        if self.roll.running():
+            return True
+        self._roll_source = None
+        return False
 
     def set_stale(self, stale):
         """Mute every value row while the state is stale.
@@ -301,17 +401,39 @@ class CostMeter(Gtk.Window):
                 for name in LIMIT_CLASSES:
                     context.remove_class(name)
                 context.add_class("muted")
-        # When fresh, the window rows are left alone: set_window_row has already
+        # When fresh, the window rows are left alone: draw_row has already
         # set or cleared their `muted` for the uncalibrated case, and clearing it
         # here would present an uncalibrated dollar figure as a calibrated one.
 
-    def set_window_row(self, label, window):
+    def draw_row(self, key):
+        """Paint one value row from whatever the roll says it is showing.
+
+        The dollar figure comes from the roll rather than from state.json, so a
+        frame mid-tween and a settled row go through exactly one code path.
+        For the limit rows that figure is substituted into the window dict and
+        `window_row` builds the composite text as usual: the percentage and the
+        reset time hold still while the dollars move, which is right — the
+        percentage is a rounded estimate against a ceiling you derived yourself,
+        and animating it would put motion on the least measured thing on screen.
+
+        Colour is whatever the row's own state says it is, mid-roll included:
+        the only thing a frame changes is the text. Dimming the digits while
+        they moved was tried and read as a blink, not as blur.
+        """
+        label = self.rows[key]
         context = label.get_style_context()
         for name in LIMIT_CLASSES + ("muted",):
             context.remove_class(name)
-        text, style = window_row(window)
+
+        value = self.roll.shown(key)
+        if key in WINDOW_KEYS:
+            text, style = window_row({**self.windows[key], "usd": value})
+            context.add_class(style)
+        elif key == TURN_KEY:
+            text = turn_text(value, self.roll.moving(key))
+        else:
+            text = _fmt_usd(value)
         label.set_text(text)
-        context.add_class(style)
 
     def on_click(self, _widget, event):
         if event.button == 1:
@@ -351,9 +473,14 @@ class CostMeter(Gtk.Window):
 
     def show_menu(self, event):
         menu = Gtk.Menu()
+        # Read as the menu is built, not cached: the CLI writes the same key,
+        # so a caption decided at startup could be a session out of date.
+        paused = autolaunch.paused()
         for caption, handler in (
             ("Refresh now", lambda *_: self.refresh()),
             ("Reset position", lambda *_: self.reset_position()),
+            ("Resume auto-launch" if paused else "Pause auto-launch",
+             lambda *_: self.set_autolaunch_paused(not paused)),
             ("Quit", lambda *_: Gtk.main_quit()),
         ):
             item = Gtk.MenuItem(label=caption)
@@ -362,6 +489,21 @@ class CostMeter(Gtk.Window):
         menu.show_all()
         menu.popup_at_pointer(event)
         self.menu = menu  # keep a reference so it is not collected mid-display
+
+    def set_autolaunch_paused(self, paused):
+        """Pause or resume the panel opening itself at the next session.
+
+        Through update_config rather than autolaunch.set_paused, because this
+        side already has the lock discipline and the "not worth interrupting the
+        user over" handling for a busy config file. The key and its meaning stay
+        owned by cost_meter/autolaunch.py, which is what the hook reads.
+
+        This never closes the panel. Pausing says what the *next* session does;
+        quitting is the item below it.
+        """
+        self.update_config(
+            lambda c: c.__setitem__(autolaunch.KEY, True) if paused
+            else c.pop(autolaunch.KEY, None))
 
     def reset_position(self):
         # Drop any debounce still in flight, or it would write the old position
