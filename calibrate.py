@@ -7,10 +7,12 @@ draws harder on the limit than Sonnet and pricing weights the models for free.
 
 The 5-hour figure this divides into is the spend in the *current block* — the
 one that opened on your first message after the previous block expired — not a
-trailing five hours. Check that the panel's reset time matches the one /usage
-prints before trusting the ceiling a run derives: if they disagree, the two
-sides are dividing spend from different windows and the ceiling absorbs the
-difference rather than the error being visible.
+trailing five hours. Once a run has landed, check that the reset time the panel
+now shows matches the one /usage prints before trusting the ceiling: if they
+disagree, the two sides are dividing spend from different windows and the
+ceiling absorbs the difference rather than the error being visible. The check
+runs after rather than before, because the row carries no reset time until it
+has a percentage to qualify.
 
 Usage (the bare -- keeps pixi from reading --5h as one of its own flags):
     pixi run calibrate -- --5h 62      # /usage reported 62% for the 5-hour block

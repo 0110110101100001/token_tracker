@@ -81,9 +81,9 @@ The bare `--` matters: without it pixi reads `--5h` as one of its own flags. Eac
 run divides your currently-recorded spend by the percentage you gave it, stores
 the resulting ceiling in `data/config.json`, and redraws the panel immediately.
 
-Before trusting a `--5h` calibration, check the reset time on the panel's 5h row
-against the one `/usage` prints. Why that check matters, and when to
-re-calibrate, is under [Calibration](#calibration).
+Once the 5h row has a percentage it also names the time its block resets. Check
+that against the time `/usage` prints before you trust the percentage — why that
+check matters, and when to re-calibrate, is under [Calibration](#calibration).
 
 **If you already know your ceiling**, skip the derivation and write it in
 directly — `pixi run limit -- --week 2000`. That is also the only thing that
@@ -188,9 +188,9 @@ your screen. It shows six rows:
 - **session** — USD cost of the current Claude Code session
 - **today** — USD cost since local midnight
 - *(separator)*
-- **5h window** — USD spent in the *current 5-hour block*, with the clock time
-  that block resets: `$71.46 · 19:04` on its own until calibrated and
-  `$71.46 ~20 % · 19:04` afterwards
+- **5h window** — USD spent in the *current 5-hour block*: `$71.46` on its own
+  until calibrated, and `$71.46 ~20 % · 19:04` afterwards, where `19:04` is the
+  clock time that block resets
 - **week** — the same for the trailing 7 days, with no reset time (the weekly
   cap has no block boundary this tool can locate)
 
@@ -207,6 +207,12 @@ checked against `/usage` directly. If the panel says `19:04` and `/usage` says i
 resets at 7pm, the two are describing the same block and the percentage beside it
 is trustworthy. If they disagree, the calibration is measuring the wrong window
 and the percentage should not be believed.
+
+That is also why it appears only alongside a percentage. What the time is *for*
+is saying which block the estimate beside it describes; with no percentage on
+the row there is nothing for it to qualify, and a bare clock time next to a
+dollar figure reads as a second unrelated claim rather than as context for the
+first. An uncalibrated row shows the dollars alone.
 
 The dollar figure never goes away, because it is the part that is measured: the
 percentage is only ever an estimate against a ceiling you derived yourself, and
@@ -452,11 +458,14 @@ The commands themselves are up top, under [Calibrate](#calibrate) and
 [Un-calibrate](#un-calibrate). What follows is when to run them and what the
 numbers mean.
 
-**Check the reset time before you trust a `--5h` calibration.** The panel's 5h
-row names the time its block resets; `/usage` names the same thing. If they
-match, both are describing the same block and the derived ceiling is sound. If
-they don't, calibrate anyway but expect the percentage to be wrong — the two are
-dividing by spend from different windows, and the ceiling absorbs the difference.
+**Check the reset time before you trust a `--5h` percentage.** Once the row is
+calibrated it names the time its block resets; `/usage` names the same thing. If
+they match, both are describing the same block and the derived ceiling is sound.
+If they don't, the percentage is wrong — the two sides are dividing by spend from
+different windows, and the ceiling absorbs the difference rather than the error
+being visible. The check comes after the calibration rather than before it,
+because an uncalibrated row carries no reset time to compare: calibrate, look,
+and `--clear-5h` again if the two disagree.
 
 **Re-calibrate after a long gap in usage, not in the middle of one block.** The
 ceiling is a ratio, so it is only as good as the pair of numbers it came from.
@@ -567,7 +576,8 @@ your spend.
   records that usage. A block opened by a message sent in the browser is
   invisible here, so the panel would anchor the block on your first Claude Code
   message instead and place the reset later than the real one. Comparing the
-  row's reset time against `/usage` is what catches this.
+  row's reset time against `/usage` is what catches this — on a calibrated row,
+  which is the only kind that shows one.
 - **Server-side tool use is not counted.** Web search is billed per thousand
   searches rather than per token, and those counts (`usage.server_tool_use`)
   are ignored. They are zero across every transcript on the machine this was

@@ -186,12 +186,15 @@ class WindowRowTest(unittest.TestCase):
 
 
 class ResetTimeTest(unittest.TestCase):
-    """The 5-hour row names the time its block resets.
+    """The 5-hour row names the time its block resets, when it has a percentage.
 
     The limit is a fixed block, so there is an actual clock time to show, and it
-    is the same one /usage prints. Having it on the row is what makes a
-    calibration checkable: the percentage is only trustworthy if the panel and
+    is the same one /usage prints. Having it beside the percentage is what makes
+    a calibration checkable: the percentage is only trustworthy if the panel and
     /usage agree about which block they are describing.
+
+    Without a percentage there is nothing for it to qualify, so it goes: an
+    uncalibrated row is reporting one measured fact, not two unrelated ones.
     """
 
     def setUp(self):
@@ -204,10 +207,14 @@ class ResetTimeTest(unittest.TestCase):
             widget.window_row({"usd": 51.04, "pct": 6, "resets_at": self.iso})[0],
             "$51.04 ~6 % · 19:04")
 
-    def test_an_uncalibrated_row_still_names_the_reset_time(self):
+    def test_an_uncalibrated_row_drops_the_reset_time(self):
+        # The time qualifies the percentage: it says which block the estimate
+        # describes. With no percentage on the row it qualifies nothing, and a
+        # bare clock time beside a dollar figure reads as a second, unrelated
+        # claim rather than as context for the first.
         self.assertEqual(
             widget.window_row({"usd": 51.04, "pct": None, "resets_at": self.iso}),
-            ("$51.04 · 19:04", "muted"))
+            ("$51.04", "muted"))
 
     def test_a_row_with_no_open_block_says_nothing_about_resetting(self):
         # No block is open, so there is no reset time to name and inventing one

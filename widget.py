@@ -100,17 +100,20 @@ def window_row(window):
     there is no room for the word as well once both numbers are on the row.
 
     The 5-hour row also names when its block resets; the weekly row carries no
-    such key and is unchanged. The reset time is shown whether or not the row is
-    calibrated, because it is measured rather than estimated — it is the one
-    figure here that can be checked against /usage directly.
+    such key and is unchanged. That time rides with the percentage rather than
+    with the dollars: what it is for is saying which block the estimate beside it
+    describes, which is how a calibration gets checked against /usage. On a row
+    with no percentage it qualifies nothing, and a bare clock time next to a
+    dollar figure reads as a second unrelated claim instead of as context for the
+    first — so an uncalibrated row shows the dollars alone.
     """
     usd = _fmt_usd(window.get("usd"))
-    resets = _fmt_reset(window.get("resets_at"))
-    tail = "" if resets is None else f" · {resets}"
     pct = window.get("pct")
     if pct is None:
         # Not calibrated: dollars only, muted, rather than an invented number.
-        return usd + tail, "muted"
+        return usd, "muted"
+    resets = _fmt_reset(window.get("resets_at"))
+    tail = "" if resets is None else f" · {resets}"
     return (f"{usd} ~{pct} %{tail}",
             "red" if pct >= RED_AT else "amber" if pct >= AMBER_AT else "green")
 
