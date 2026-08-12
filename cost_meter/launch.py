@@ -1,10 +1,21 @@
 # cost_meter/launch.py
-"""SessionStart hook: bring the cost meter up if it is not already running.
+"""Bring the cost meter up if it is not already running.
 
-Run through launch_widget.sh / launch_widget.cmd, or `pixi run --frozen launch`.
+Two callers, and the difference between them is the whole shape of this module:
+
+- The **SessionStart hook**, through launch_widget.sh / launch_widget.cmd or
+  `pixi run --frozen launch`. It obeys a paused auto-launch and speaks only to
+  the log.
+- **A human**, through `pixi run show`, which passes `--force`. Pausing is a
+  statement about what *sessions* do, so somebody typing a command overrides it
+  without changing it — and gets told what happened, on stdout.
+
+That last part is not a nicety. A paused hook printing nothing and exiting 0 is
+indistinguishable from a panel that opened fine, which is exactly how somebody
+loses half an hour wondering where their window went.
 
 This is on the critical path of starting a Claude Code session, so every path
-returns 0 and nothing is written to stdout or stderr. A missing display, a
+returns 0 and the hook writes nothing to stdout or stderr. A missing display, a
 broken widget, or no desktop at all must cost the user a panel, never a session.
 
 Every path does write one line to cost-meter.log, though. Without it a hook that
@@ -18,6 +29,7 @@ cmd.exe express completely differently, and maintaining that twice is how the
 two platforms quietly drift apart.
 """
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -153,31 +165,51 @@ def _spawn(command, cwd):
     return subprocess.Popen(command, **kwargs)
 
 
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--force", action="store_true",
+                        help="open the panel even when auto-launch is paused, "
+                             "and report the outcome on stdout. What "
+                             "`pixi run show` passes; the hook never does.")
+    return parser
+
+
 def main(argv=None):
+    # Parsed outside the try, and strictly. The hook passes no arguments at all,
+    # so it cannot reach an error exit here; the flag arrives only from the
+    # fixed argv in pixi.toml, which no user types by hand.
+    args = build_parser().parse_args(argv)
+
+    def announce(line):
+        """Log every outcome; print it too when a human asked for this run."""
+        log.write(line)
+        if args.force:
+            print(line)
+
     try:
-        if autolaunch.paused():
+        if autolaunch.paused() and not args.force:
             # First, before the liveness probe: a hook the user has switched off
             # should do nothing at all, not take locks to decide it.
-            log.write("launch: paused")
+            announce("launch: paused")
             return 0
         if panel_is_running():
             # Already up -- including when the user closed it deliberately
             # mid-session, which stays closed until the next session starts.
-            log.write(f"launch: already running (pid {read_pid()})")
+            announce(f"launch: already running (pid {read_pid()})")
             return 0
         if not has_display():
-            log.write("launch: no display")
+            announce("launch: no display")
             return 0
         child = spawn_detached([shutil.which("pixi") or "pixi", *WIDGET_TASK],
                                paths.project_root())
         # The pixi shim's pid, not the panel's -- the panel records its own in
         # widget.pid once it is up. Both are worth having: if the second never
         # appears, the first says the spawn was not where it broke.
-        log.write(f"launch: spawned pixi pid {child.pid}")
+        announce(f"launch: spawned pixi pid {child.pid}")
     except Exception as exc:
         # A panel is never worth costing somebody their session, but a swallowed
         # exception with no trace of it is how this went undiagnosed before.
-        log.write(f"launch: failed: {exc!r}")
+        announce(f"launch: failed: {exc!r}")
     return 0
 
 

@@ -53,8 +53,15 @@ test = "python run_tests.py"
 tally = "python tally.py"
 
 # Bring the panel up unless one is already running. This is what the
-# SessionStart hook runs, via launch_widget.sh or launch_widget.cmd.
+# SessionStart hook runs, via launch_widget.sh or launch_widget.cmd. It obeys a
+# paused auto-launch and prints nothing; use `show` to open one by hand.
 launch = "python -m cost_meter.launch"
+
+# The panel on demand, whatever auto-launch is set to, and detached so it
+# outlives the shell that ran it. `pixi run widget` is the foreground
+# equivalent. The flag lives here rather than in the user's fingers: there is no
+# bare `--` to remember and no way to typo it into silently doing nothing.
+show = "python -m cost_meter.launch --force"
 
 # Calibration. Pass flags after a bare `--` so pixi does not read them as its
 # own: pixi run calibrate -- --5h 42

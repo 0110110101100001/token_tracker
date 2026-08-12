@@ -123,15 +123,32 @@ auto-launch** / **Resume auto-launch**.
 Pausing suspends the launch and nothing else. **Recording continues** — the
 `Stop` hook still prices every turn, so a paused week leaves no gap in the
 figures and they are all there when you bring the panel back. A panel already on
-screen stays up; pausing is a statement about the next session, not this one. And
-`pixi run widget` still works, so you can have the panel when you want it without
-turning the automatic launch back on.
+screen stays up; pausing is a statement about the next session, not this one.
+
+**To open the panel while it stays paused:**
+
+```bash
+pixi run show
+```
+
+That is the command for exactly this: it opens a panel whatever the flag says,
+leaves the flag alone, and detaches, so the panel outlives the shell you typed
+it in. The pause governs what *sessions* do; typing a command is not a session,
+and overriding it once is not a decision to stop overriding it every time after.
+It also reports what it did — `launch: spawned pixi pid 12345`, or
+`launch: already running (pid …)` — because the alternative is a command that
+prints nothing whether it worked or not.
 
 `pixi run launch` is the one thing a pause does stop, deliberately: it *is* the
 automatic launch — the hook runs that exact command — so it obeys the flag and
-logs `launch: paused` rather than starting a panel. Start one by hand with
-`pixi run widget` (foreground) or `./run_widget.sh` (`run_widget.cmd` on
-Windows).
+logs `launch: paused` rather than starting a panel, silently, as anything on a
+session's critical path must. If you reach for it by hand while paused, nothing
+happens and nothing says so; that is what `show` exists to avoid.
+
+`pixi run widget` (foreground) and `./run_widget.sh` (`run_widget.cmd` on
+Windows) also still work, and both ignore the pause too. They differ from `show`
+in staying attached to your shell, so closing the terminal takes the panel with
+it.
 
 Do not confuse this with `install.sh --autostart`, which is about the panel
 starting when you *log in*. The two are independent: a paused auto-launch does
@@ -364,8 +381,9 @@ failing visibly. After editing `pixi.toml`, run `pixi install`.
 Start the panel by hand:
 
 ```bash
+pixi run show         # detached, whatever auto-launch is set to — the usual one
 pixi run widget       # in the foreground
-pixi run launch       # detached, and only if one is not already up
+pixi run launch       # detached, but obeys a paused auto-launch and stays silent
 ```
 
 On Linux `pixi run widget` is also how you see the panel's errors. On Windows it

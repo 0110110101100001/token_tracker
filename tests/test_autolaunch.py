@@ -111,7 +111,10 @@ class PausedFlagTest(TempHome):
 
 
 class LaunchTest(TempHome):
-    """What the SessionStart hook does with the flag set.
+    """What the launcher does with the flag set — for the hook, and for a human.
+
+    The hook obeys the pause and speaks only to the log. `--force` is the other
+    caller: somebody who typed a command and is owed both a panel and an answer.
 
     `spawn_detached` and `has_display` are swapped out rather than mocked: the
     real spawn would put a panel on the developer's screen, and the display test
@@ -171,6 +174,49 @@ class LaunchTest(TempHome):
         autolaunch.set_paused(False)
         launch.main([])
         self.assertEqual(len(self.spawned), 1)
+
+    def test_force_opens_the_panel_although_it_is_paused(self):
+        autolaunch.set_paused(True)
+        self.assertEqual(launch.main(["--force"]), 0)
+        self.assertEqual(len(self.spawned), 1)
+
+    def test_force_leaves_the_pause_in_place(self):
+        # Opening the panel by hand says nothing about what the next session
+        # should do. The pause is a statement about sessions; overriding it once
+        # is not a decision to stop overriding it every time after.
+        autolaunch.set_paused(True)
+        launch.main(["--force"])
+        self.assertTrue(autolaunch.paused())
+
+    def test_force_reports_what_it_did(self):
+        # The failure this exists to prevent, and it cost a real half hour: a
+        # paused launch printed nothing and exited 0, which looks identical to a
+        # panel that opened fine.
+        autolaunch.set_paused(True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            launch.main(["--force"])
+        self.assertIn("spawned", out.getvalue())
+
+    def test_force_says_so_when_a_panel_is_already_up(self):
+        # Swapped out rather than really held: taking the panel's lock for the
+        # duration would make this test race the developer's own panel.
+        real_probe = launch.panel_is_running
+        launch.panel_is_running = lambda: True
+        self.addCleanup(lambda: setattr(launch, "panel_is_running", real_probe))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            launch.main(["--force"])
+        self.assertIn("already running", out.getvalue())
+        self.assertEqual(self.spawned, [])
+
+    def test_the_hook_prints_nothing(self):
+        # It runs on the critical path of starting a session, so the log is the
+        # only place it is allowed to speak.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            launch.main([])
+        self.assertEqual(out.getvalue(), "")
 
 
 class FakeChild:
