@@ -110,8 +110,9 @@ def update_json_locked(path, lock_path, timeout=10.0):
     """Read-modify-write a JSON file with the lock held across both halves.
 
     Several writers share config.json — the widget stores its position there and
-    calibrate.py stores the ceilings. An unlocked read-modify-write silently
-    drops whichever value the other side wrote in between.
+    cost_meter/ceilings.py stores the ceilings, for both calibrate.py and
+    limit.py. An unlocked read-modify-write silently drops whichever value the
+    other side wrote in between.
     """
     with exclusive_lock(lock_path, timeout=timeout):
         data = read_json(path, default={}) or {}

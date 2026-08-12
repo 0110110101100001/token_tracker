@@ -85,6 +85,11 @@ Before trusting a `--5h` calibration, check the reset time on the panel's 5h row
 against the one `/usage` prints. Why that check matters, and when to
 re-calibrate, is under [Calibration](#calibration).
 
+**If you already know your ceiling**, skip the derivation and write it in
+directly — `pixi run limit -- --week 2000`. That is also the only thing that
+works when your work is split across machines, where no `/usage` reading yields
+a correct ceiling at all: see [Declaring a known limit](#declaring-a-known-limit).
+
 ## Un-calibrate
 
 To undo it — a mistyped percentage, the wrong window read, or you would rather
@@ -164,8 +169,12 @@ Worth reading before you trust a figure on the panel.
 The first point is the one that bites hardest, and it bites through calibration:
 a ceiling derived from locally-recorded spend quietly absorbs whatever usage this
 installation cannot see, which holds up while that share stays roughly constant
-and drifts as soon as it does not. If you move your work between machines,
-recalibrate rather than trusting the percentage.
+and drifts as soon as it does not. If you move your work between machines
+occasionally, recalibrate rather than trusting the percentage. If it is split
+between them habitually, recalibration cannot help — the two numbers the ratio
+needs describe different scopes, and no reading of `/usage` reconciles them.
+Declare the ceiling instead: see
+[Declaring a known limit](#declaring-a-known-limit).
 
 The full list, including the ones that are only worth knowing once something
 looks wrong, is under [Known limitations](#known-limitations).
@@ -469,6 +478,34 @@ changes. The ceiling is derived from spend this installation can see, so it
 silently folds in whatever share of your usage happens elsewhere — see
 [What it counts](#what-it-counts). That is stable while the share is, and wrong
 as soon as you move your work.
+
+### Declaring a known limit
+
+Calibration derives the ceiling from a ratio. If you already know the ceiling —
+a plan's weekly cap, say — write it in directly and skip the derivation:
+
+```bash
+pixi run limit -- --week 2000
+pixi run limit -- --5h 130
+```
+
+The same bare `--` applies, and the values are USD-equivalent, on the same
+scale as the dollar figures the rows already show.
+
+This is the answer when calibration cannot work rather than merely being
+imprecise: with the work split across machines, the spend the ratio divides is
+this installation's while the percentage is the whole account's, so no reading
+of `/usage` produces a correct ceiling. A declared one changes what the
+percentage claims — this installation's share of a known bound, rather than an
+estimate of account-wide consumption. It keeps its `~`, and for a reason: with
+nothing absorbing the usage this installation cannot see, it understates the
+account by however much the other machines contribute.
+
+Unlike `calibrate`, `limit` needs no recorded spend: there is no ratio to take.
+
+There is one ceiling per window however it arrived, so the clear flags are
+shared — `pixi run limit -- --clear-week` and
+`pixi run calibrate -- --clear-week` are the same operation.
 
 ## Pricing
 
