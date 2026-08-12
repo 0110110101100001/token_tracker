@@ -25,8 +25,9 @@ import argparse
 import math
 import sys
 
-from cost_meter import ceilings
+from cost_meter import ceilings, paths, store
 from cost_meter.ceilings import CEILINGS
+from tally import refresh
 
 
 def build_parser():
@@ -83,3 +84,39 @@ def plan(parser, args):
             parser.error("a ceiling must be greater than zero; it is the "
                          "divisor the percentage comes from")
     return to_set, to_clear
+
+
+def main(argv=None):
+    parser = build_parser()
+    to_set, to_clear = plan(parser, parser.parse_args(argv))
+
+    if to_clear:
+        return ceilings.clear(to_clear, refresh,
+                              warn=lambda line: print(line, file=sys.stderr))
+
+    # Written first and reported second, so a run can never print a ceiling it
+    # failed to persist. One lock hold for every window named, so a two-window
+    # run cannot half-apply.
+    try:
+        ceilings.set_ceilings({key: value for _, key, value in to_set})
+    except store.LockTimeout as exc:
+        print(f"could not save the ceiling: {exc}", file=sys.stderr)
+        return 1
+    for label, _, value in to_set:
+        print(f"{label}: ceiling set to ${value:.2f} (declared)")
+
+    # The panel redraws from the file monitor, so without this the rows would
+    # keep showing no percentage until the next assistant turn. A separate lock
+    # hold: exclusive_lock is not reentrant, and set_ceilings has released.
+    try:
+        with store.exclusive_lock(paths.lock_path()):
+            refresh(session_id="")
+    except store.LockTimeout as exc:
+        print(f"ceiling saved, but the refresh could not run: {exc}",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

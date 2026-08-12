@@ -2,6 +2,8 @@
 """Limit's argument contract: what it accepts, and what it refuses to."""
 import unittest
 
+from support import TempHome
+
 import limit
 
 
@@ -69,6 +71,49 @@ class RejectionTest(unittest.TestCase):
 
     def test_clearing_one_window_while_declaring_the_other_is_rejected(self):
         self.reject(["--clear-5h", "--week", "2000"])
+
+
+class WriteTest(TempHome):
+    """main() writes, reports, and refreshes -- in that order."""
+
+    def test_a_declared_week_lands_in_config(self):
+        self.assertEqual(limit.main(["--week", "2000"]), 0)
+        self.assertEqual(self.config()["ceiling_7d_usd"], 2000.0)
+
+    def test_both_windows_land_together(self):
+        limit.main(["--5h", "130", "--week", "2000"])
+        self.assertEqual(self.config(), {"ceiling_5h_usd": 130.0,
+                                         "ceiling_7d_usd": 2000.0})
+
+    def test_a_declaration_needs_no_spend(self):
+        # The case calibrate refuses: with nothing recorded there is no ratio to
+        # take, but a declared ceiling does not come from one. TempHome's
+        # transcript directory is empty, so no event exists in any window.
+        self.assertEqual(limit.main(["--5h", "130"]), 0)
+        self.assertEqual(self.config()["ceiling_5h_usd"], 130.0)
+
+    def test_the_saved_window_position_survives(self):
+        self.write_config({"widget_position": [100, 200]})
+        limit.main(["--week", "2000"])
+        self.assertEqual(self.config(), {"widget_position": [100, 200],
+                                         "ceiling_7d_usd": 2000.0})
+
+    def test_a_declaration_replaces_a_derived_ceiling(self):
+        # One ceiling per window: whichever tool wrote it, the other overwrites.
+        self.write_config({"ceiling_7d_usd": 28.58})
+        limit.main(["--week", "2000"])
+        self.assertEqual(self.config()["ceiling_7d_usd"], 2000.0)
+
+    def test_a_rejected_run_writes_nothing(self):
+        self.write_config({"ceiling_7d_usd": 2000.0})
+        with self.assertRaises(SystemExit):
+            limit.main(["--week", "0"])
+        self.assertEqual(self.config(), {"ceiling_7d_usd": 2000.0})
+
+    def test_clearing_goes_through_the_shared_path(self):
+        self.write_config({"ceiling_7d_usd": 2000.0})
+        self.assertEqual(limit.main(["--clear-week"]), 0)
+        self.assertEqual(self.config(), {})
 
 
 if __name__ == "__main__":
