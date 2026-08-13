@@ -162,30 +162,44 @@ def format_age(seconds):
     return f"{days} d {hours} h"
 
 
-def anchor_block(limits, now_epoch):
-    """The 5-hour block bounded by the server's reset time, or None.
+def anchor_window(limits, kind, length, now_epoch):
+    """The window of `length` seconds ending at the server's reset time, or None.
 
-    The server knows when the block it is reporting on ends. `current_block` only
-    knows when this machine last sent something, and on an account used from more
-    than one machine those disagree: a block another machine opened began before
-    anything in these events, so the local chain re-anchors in the wrong place and
-    the dollar figure describes a window nobody has.
+    The server knows when the window it is reporting on ends; nothing here does.
+    `current_block` can only guess from when this machine last sent something, and
+    on an account used from more than one machine those disagree: a block another
+    machine opened began before anything in these events, so the local chain
+    re-anchors in the wrong place and the dollar figure describes a window nobody
+    has. The weekly figure has the same problem in a milder form — a trailing
+    seven days includes a tail the real limit has already reset past.
+
+    `length` is assumed rather than read, because the server sends only the end.
+    Five hours and seven days are what the two windows are called, and
+    BLOCK_5H_SECONDS / WINDOW_7D_SECONDS already assume the same lengths
+    everywhere else here.
 
     None when there are no account figures, when the row carries no usable reset
-    time, or when that time has already passed — a block that has reset is not the
-    open one, and the caller falls back to the local guess.
+    time, or when that time has already passed — a window that has reset is not
+    the open one, and the caller falls back to counting locally.
     """
-    row = ((limits or {}).get("rows") or {}).get(utilization.SESSION)
+    row = ((limits or {}).get("rows") or {}).get(kind)
     end = parse_updated_at((row or {}).get("resets_at"))
     if end is None or now_epoch >= end:
         return None
-    return end - BLOCK_5H_SECONDS, end
+    return end - length, end
 
 
 def build_state(events, pricing, session_id, new_ids, now_epoch, limits):
     midnight = _local_midnight(now_epoch)
-    block = anchor_block(limits, now_epoch) or current_block(
+    block = anchor_window(limits, utilization.SESSION, BLOCK_5H_SECONDS,
+                          now_epoch) or current_block(
         [event[0] for event in events], now_epoch)
+    # The trailing fallback is expressed as a window too, so one comparison
+    # serves both cases below. It is what this row showed before the server's
+    # reset time was available: close, but ending whenever this happened to run
+    # rather than when the limit actually resets.
+    week = anchor_window(limits, utilization.WEEKLY, WINDOW_7D_SECONDS,
+                         now_epoch) or (now_epoch - WINDOW_7D_SECONDS, now_epoch)
     unknown = set()
 
     session_usd = today_usd = usd_5h = usd_7d = last_turn_usd = 0.0
@@ -206,7 +220,7 @@ def build_state(events, pricing, session_id, new_ids, now_epoch, limits):
             today_usd += usd
         if block is not None and block[0] <= ts < block[1]:
             usd_5h += usd
-        if ts >= now_epoch - WINDOW_7D_SECONDS:
+        if week[0] <= ts < week[1]:
             usd_7d += usd
 
     return {

@@ -26,20 +26,23 @@ from cost_meter import autolaunch, paths, roll, store, summary, utilization  # n
 MARGIN = 24
 WIDTH = 240
 # Drag-to-resize. The panel scales as one piece — font, padding and width
-# together — rather than the frame alone: the content is five fixed rows, so a
-# wider window on its own would buy nothing but blank space around numbers that
-# stayed exactly as small. One number therefore drives everything, and it is
-# taken from the horizontal component of the drag. Height is never an input;
-# there are five rows and they are as tall as the font makes them.
+# together — rather than the frame alone: the content is a fixed set of rows, so
+# a wider window on its own would buy nothing but blank space around numbers that
+# stayed exactly as small. One number therefore drives everything, and either
+# component of the drag can move it: pulling any edge outwards grows the panel.
+# Height is never *set* — the rows are as tall as the font makes them — but a
+# vertical pull is still a perfectly good way to say "bigger".
 MIN_SCALE = 0.7
 MAX_SCALE = 3.0
 # The grab band around the window's perimeter, and how far along a side still
 # counts as that side's corner. Undecorated windows get no frame from anybody,
-# so this band is the whole handle; 6 px is what the pointer can find without
-# the band eating drags meant to move the panel. A 6 px corner square would be
-# too small to hit, hence the longer reach, as on any real window frame.
-EDGE = 6
-CORNER = 16
+# so this band is the whole handle. 16 px is comfortable to find without
+# looking; it costs the band's width off each side of the area that still moves
+# the window, which on a default-size panel leaves 208×107 of the 240×139 to
+# drag by. The corner reaches about twice as far along each side, so a pure-side
+# grab does not start immediately beside a corner — as on any real window frame.
+EDGE = 16
+CORNER = 32
 AMBER_AT = 60
 RED_AT = 85
 # Colour classes for the two limit rows. Declared after `muted` in the CSS, so
@@ -61,7 +64,7 @@ STALE_POLL_SECONDS = 60
 # The two limit rows are not among them. They carry an integer percentage that
 # moves once every few hours, which has nothing to tween, and the dollars that
 # used to animate there have moved into the tooltip.
-ROLL_KEYS = ("last_turn", "session", "today")
+ROLL_KEYS = ("last_turn", "session", "today", "week_local")
 TURN_KEY = "last_turn"
 WINDOW_KEYS = ("window_5h", "window_7d")
 # Which account limit each row draws, named as the server names them.
@@ -134,44 +137,76 @@ def resize_zone(x, y, width, height):
     off the middle: a grab zone that swallowed an intended move would make the
     panel feel stuck.
 
-    The top and bottom edges are deliberately not handles. Height follows the
-    content and the scale, so a vertical-only drag would have nothing to change,
-    and offering a resize cursor for a drag that does nothing is worse than
-    leaving it a move. The corners are handles because they carry a horizontal
-    component like any other.
+    All four edges are handles. A vertical pull cannot set the height — the rows
+    are as tall as the font makes them — but it can say "bigger", which is the
+    one number a resize here has to produce anyway.
+
+    The side bands are tested first, so the corner squares are decided by how far
+    down the side the pointer is. Which of the two bands claims a corner makes no
+    difference to the result: inside a corner both are true and the name comes out
+    the same either way.
     """
     west, east = x < EDGE, x >= width - EDGE
-    if not (west or east):
-        return None
-    side = "west" if west else "east"
-    if y < CORNER:
-        return f"north_{side}"
-    if y >= height - CORNER:
-        return f"south_{side}"
-    return side
+    north, south = y < EDGE, y >= height - EDGE
+    if west or east:
+        side = "west" if west else "east"
+        if y < CORNER:
+            return f"north_{side}"
+        if y >= height - CORNER:
+            return f"south_{side}"
+        return side
+    if north or south:
+        side = "north" if north else "south"
+        if x < CORNER:
+            return f"{side}_west"
+        if x >= width - CORNER:
+            return f"{side}_east"
+        return side
+    return None
 
 
-def drag_scale(zone, start_scale, dx):
-    """The scale a horizontal drag of `dx` pixels arrives at.
+def drag_scale(zone, start_scale, dx, dy):
+    """The scale a drag of `dx`, `dy` pixels arrives at.
 
-    Outwards grows the panel on either side, so a drag on a west handle counts
-    the opposite direction. `WIDTH` is the divisor because it is what scale 1.0
-    measures: dragging a full panel width doubles the panel.
+    Outwards grows the panel on every side, so west counts leftwards and north
+    counts upwards. A corner carries both components and adds them, which is why
+    a diagonal pull grows about twice as fast as a straight one — and why a corner
+    dragged straight down does something rather than nothing.
+
+    `WIDTH` is the divisor on both axes: dragging a full panel width doubles the
+    panel, and a pixel means the same thing whichever way it is pulled. Scaling
+    the vertical axis by the panel's own height instead would make the identical
+    gesture mean two different amounts depending on direction.
     """
-    outwards = -dx if zone.endswith("west") else dx
+    outwards = 0.0
+    if "west" in zone:
+        outwards -= dx
+    elif "east" in zone:
+        outwards += dx
+    if "north" in zone:
+        outwards -= dy
+    elif "south" in zone:
+        outwards += dy
     return clamp_scale(start_scale + outwards / WIDTH)
 
 
-def drag_origin(zone, start_x, start_width, width):
-    """Where the window has to start so the un-grabbed edge stays put.
+def drag_origin(zone, start, width, height):
+    """Where the window has to start so the un-grabbed edges stay put, as (x, y).
 
-    Grab the left edge and the right one should not move; that means shifting
-    the window by whatever the width gained. An east handle keeps the origin,
+    Grab the left edge and the right one should not move; that means shifting the
+    window by whatever the width gained. Same on the other axis: grab the top and
+    the bottom edge stays where it was. East and south handles keep the origin,
     which is where the window already grows from.
+
+    `start` is the sample taken when the drag began — `x_window`, `y_window`,
+    `width`, `height` — rather than four more parameters, because every one of
+    them has to come from that same instant to be worth anything.
     """
-    if zone.endswith("west"):
-        return start_x + start_width - width
-    return start_x
+    x = (start["x_window"] + start["width"] - width if "west" in zone
+         else start["x_window"])
+    y = (start["y_window"] + start["height"] - height if "north" in zone
+         else start["y_window"])
+    return x, y
 
 
 def _fmt_usd(value):
@@ -435,20 +470,27 @@ class CostMeter(Gtk.Window):
         grid.attach(Gtk.Separator(), 0, 3, 2, 1)
         self.window_5h = _row(grid, 4, "5h window", self.labels)
         self.window_7d = _row(grid, 5, "week", self.labels)
+        # Directly under the percentage it belongs to, because the two describe
+        # the same seven days by different measures: the account's share of its
+        # limit, and what this installation put into it. Adjacency is what says
+        # they are one window; a caption naming the machine is what stops the
+        # dollars being read as the account's.
+        self.week_local = _row(grid, 6, "this machine", self.labels)
         # Below a separator of its own: everything above is a measured figure,
         # and this is the fact that says what those figures mean — money owed on
         # API billing, notional against a seat.
-        grid.attach(Gtk.Separator(), 0, 6, 2, 1)
-        self.billing = _row(grid, 7, "billing", self.labels)
-        # Split because `muted` has two owners: staleness for all five rows, and
+        grid.attach(Gtk.Separator(), 0, 7, 2, 1)
+        self.billing = _row(grid, 8, "billing", self.labels)
+        # Split because `muted` has two owners: staleness for every value row, and
         # draw_limits for the two window rows when there is no account figure.
         # The billing row rides with the plain ones — it is drawn once from
         # state.json and only staleness ever mutes it.
         self.usd_values = (self.last_turn, self.session, self.today,
-                           self.billing)
+                           self.week_local, self.billing)
         self.window_values = (self.window_5h, self.window_7d)
         self.rows = {"last_turn": self.last_turn,
                      "session": self.session, "today": self.today,
+                     "week_local": self.week_local,
                      "window_5h": self.window_5h, "window_7d": self.window_7d}
 
         # Animation state. `_roll_source` is a single timer for the whole panel,
@@ -537,6 +579,7 @@ class CostMeter(Gtk.Window):
         per call and motion events arrive by the dozen.
         """
         name = {"west": "ew-resize", "east": "ew-resize",
+                "north": "ns-resize", "south": "ns-resize",
                 "north_west": "nwse-resize", "south_east": "nwse-resize",
                 "north_east": "nesw-resize", "south_west": "nesw-resize",
                 }.get(zone)
@@ -557,25 +600,34 @@ class CostMeter(Gtk.Window):
             return False
         start = self._resize
         scale = drag_scale(start["zone"], start["scale"],
-                           event.x_root - start["x"])
+                           event.x_root - start["x"],
+                           event.y_root - start["y"])
         if scale != self.scale:
             self.apply_scale(scale)
             self.move_for_drag(start)
         return True
 
     def move_for_drag(self, start):
-        """Keep the edge the user is not holding where they left it.
+        """Keep the edges the user is not holding where they left them.
 
         Only when the user has placed the panel themselves. While it is anchored
         the corner owns the position: on_size_allocate re-anchors on every scale
         change, so moving here would be overruled a moment later anyway, and the
-        right edge already stays put because that is the edge in the corner.
+        right and bottom edges already stay put because those are the edges in
+        the corner.
+
+        The width is taken from the scale rather than from the window, because it
+        is exact the instant the scale changes. The height cannot be: apply_scale
+        asks GTK for 1 and lets the rows clamp it up, so the real figure only
+        exists once the allocation has happened — which is why on_size_allocate
+        calls this too. From here a north drag can be one frame behind; from
+        there it is right, and a resize always allocates.
         """
         if not self.user_positioned:
             return
-        self.move(drag_origin(start["zone"], start["x_window"],
-                              start["width"], width_for_scale(self.scale)),
-                  self.get_position()[1])
+        self.move(*drag_origin(start["zone"], start,
+                               width_for_scale(self.scale),
+                               self.get_size().height))
 
     def on_release(self, _widget, _event):
         if self._resize is None:
@@ -621,6 +673,10 @@ class CostMeter(Gtk.Window):
     def on_size_allocate(self, _widget, _allocation):
         if not self.user_positioned:
             self.anchor_bottom_right()
+        elif self._resize is not None:
+            # The height is only knowable here — see move_for_drag. Without this
+            # a drag on the top edge would leave the bottom one creeping.
+            self.move_for_drag(self._resize)
 
     def at_anchor(self):
         """True when the window sits exactly where we last put it ourselves.
@@ -686,6 +742,7 @@ class CostMeter(Gtk.Window):
         rolling = self.roll.retarget({
             "session": (state.get("session") or {}).get("usd"),
             "today": state.get("today_usd"),
+            "week_local": self.windows["window_7d"].get("usd"),
         }) or turn_rolling
 
         # A broken tally exits 0 and simply stops rewriting state.json, so
@@ -836,10 +893,12 @@ class CostMeter(Gtk.Window):
                 # read per motion event instead, each frame would be measured
                 # against the size the previous frame had just produced and the
                 # panel would run away from the pointer.
-                self._resize = {"zone": zone, "x": event.x_root,
+                position, size = self.get_position(), self.get_size()
+                self._resize = {"zone": zone,
+                                "x": event.x_root, "y": event.y_root,
                                 "scale": self.scale,
-                                "x_window": self.get_position()[0],
-                                "width": self.get_size().width}
+                                "x_window": position[0], "y_window": position[1],
+                                "width": size.width, "height": size.height}
                 return True
             self.begin_move_drag(event.button, int(event.x_root),
                                  int(event.y_root), event.time)

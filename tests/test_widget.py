@@ -364,7 +364,7 @@ class RollStyleTest(unittest.TestCase):
 class ScaleSizeTest(unittest.TestCase):
     """One number sizes the whole panel.
 
-    The panel is five fixed rows, so widening the frame on its own would buy
+    The panel is a fixed set of rows, so widening the frame on its own would buy
     nothing but blank space around numbers that stayed exactly as small. Scale
     1.0 has to reproduce the sizes the panel shipped with, or upgrading would
     silently resize a panel nobody asked to resize.
@@ -421,6 +421,13 @@ class ResizeZoneTest(unittest.TestCase):
         self.assertEqual(self.zone(1, 60), "west")
         self.assertEqual(self.zone(238, 60), "east")
 
+    def test_the_top_and_bottom_edges_are_handles(self):
+        # A vertical pull cannot set the height -- the rows are as tall as the
+        # font makes them -- but it can say "bigger", which is the one number a
+        # resize here has to produce anyway.
+        self.assertEqual(self.zone(120, 1), "north")
+        self.assertEqual(self.zone(120, 118), "south")
+
     def test_the_corners_are_handles_too(self):
         self.assertEqual(self.zone(1, 1), "north_west")
         self.assertEqual(self.zone(238, 1), "north_east")
@@ -428,47 +435,99 @@ class ResizeZoneTest(unittest.TestCase):
         self.assertEqual(self.zone(238, 118), "south_east")
 
     def test_a_corner_reaches_further_along_the_side_than_the_edge_is_wide(self):
-        # A 6 px square is too small to hit. The corner claims a longer stretch
-        # of the side, which is what every real window frame does.
-        self.assertEqual(self.zone(1, 12), "north_west")
+        # An EDGE-square corner is too small to hit, so it claims a longer
+        # stretch of both sides, as every real window frame does.
+        self.assertEqual(self.zone(1, widget.EDGE + 1), "north_west")
+        self.assertEqual(self.zone(widget.EDGE + 1, 1), "north_west")
 
-    def test_a_bare_top_or_bottom_edge_is_not_a_handle(self):
-        # Height is a consequence of the content and the scale, never an input:
-        # there are five rows and they are as tall as the font. A vertical-only
-        # grab would have nothing to change, so it stays a move.
-        self.assertIsNone(self.zone(120, 1))
-        self.assertIsNone(self.zone(120, 119))
+    def test_the_pure_side_band_starts_where_the_corner_stops_reaching(self):
+        self.assertEqual(self.zone(1, widget.CORNER), "west")
+        self.assertEqual(self.zone(widget.CORNER, 1), "north")
+
+    def test_the_band_is_wide_enough_to_find_without_looking(self):
+        # The whole point of the width: an undecorated window offers no frame, so
+        # anything the pointer misses is not a handle at all.
+        self.assertEqual(self.zone(widget.EDGE - 1, 60), "west")
+        self.assertEqual(self.zone(120, widget.EDGE - 1), "north")
+        self.assertIsNone(self.zone(widget.EDGE, 60))
+        self.assertIsNone(self.zone(120, widget.EDGE))
 
 
 class ResizeDragTest(unittest.TestCase):
-    """What a drag of so many pixels does to the scale and to the window's x.
+    """What a drag of so many pixels does to the scale and to the window's origin.
 
     Pure arithmetic, deliberately: the pointer grab and the CSS reload around it
     need a display, and none of the decisions that can be wrong do.
     """
 
     def test_dragging_the_right_edge_outwards_grows_the_panel(self):
-        self.assertEqual(widget.drag_scale("east", 1.0, widget.WIDTH), 2.0)
+        self.assertEqual(widget.drag_scale("east", 1.0, widget.WIDTH, 0), 2.0)
 
     def test_dragging_the_left_edge_outwards_grows_it_by_the_same_amount(self):
         # Outwards is leftwards on that side, so the sign of dx flips.
-        self.assertEqual(widget.drag_scale("west", 1.0, -widget.WIDTH), 2.0)
-        self.assertEqual(widget.drag_scale("north_west", 1.0, -widget.WIDTH), 2.0)
+        self.assertEqual(widget.drag_scale("west", 1.0, -widget.WIDTH, 0), 2.0)
+
+    def test_dragging_the_bottom_edge_down_grows_the_panel(self):
+        self.assertEqual(widget.drag_scale("south", 1.0, 0, widget.WIDTH), 2.0)
+
+    def test_dragging_the_top_edge_up_grows_it_by_the_same_amount(self):
+        self.assertEqual(widget.drag_scale("north", 1.0, 0, -widget.WIDTH), 2.0)
+
+    def test_a_pixel_means_the_same_thing_on_either_axis(self):
+        # One divisor for both, so the identical gesture cannot mean two
+        # different amounts depending on which way it is pulled.
+        self.assertEqual(widget.drag_scale("east", 1.0, 60, 0),
+                         widget.drag_scale("south", 1.0, 0, 60))
+
+    def test_a_side_handle_ignores_the_axis_it_does_not_own(self):
+        self.assertEqual(widget.drag_scale("east", 1.0, 0, 500), 1.0)
+        self.assertEqual(widget.drag_scale("south", 1.0, 500, 0), 1.0)
+
+    def test_a_corner_adds_both_components(self):
+        # Which is why a diagonal pull grows about twice as fast as a straight
+        # one, and why a corner dragged straight down does something at all.
+        half = widget.WIDTH / 2
+        self.assertEqual(widget.drag_scale("south_east", 1.0, half, half), 2.0)
+        self.assertEqual(widget.drag_scale("north_west", 1.0, -half, -half), 2.0)
+        self.assertEqual(widget.drag_scale("north_east", 1.0, 0, -widget.WIDTH), 2.0)
 
     def test_dragging_inwards_shrinks_it(self):
-        self.assertEqual(widget.drag_scale("east", 2.0, -widget.WIDTH), 1.0)
+        self.assertEqual(widget.drag_scale("east", 2.0, -widget.WIDTH, 0), 1.0)
 
     def test_a_runaway_drag_stops_at_the_limits(self):
-        self.assertEqual(widget.drag_scale("east", 1.0, 100_000), widget.MAX_SCALE)
-        self.assertEqual(widget.drag_scale("east", 1.0, -100_000), widget.MIN_SCALE)
+        self.assertEqual(widget.drag_scale("east", 1.0, 100_000, 0),
+                         widget.MAX_SCALE)
+        self.assertEqual(widget.drag_scale("east", 1.0, -100_000, 0),
+                         widget.MIN_SCALE)
+
+    # The sample taken when the drag began: a 240x120 window at (100, 50), so
+    # its right edge is at 340 and its bottom edge at 170.
+    START = {"x_window": 100, "y_window": 50, "width": 240, "height": 120}
 
     def test_dragging_the_left_edge_leaves_the_right_edge_where_it_was(self):
-        # Grabbed at x=100 with a 240 px window, so the right edge is at 340 and
-        # a 300 px window has to start at 40 to keep it there.
-        self.assertEqual(widget.drag_origin("west", 100, 240, 300), 40)
+        # A 300 px window has to start at 40 to keep its right edge at 340.
+        self.assertEqual(widget.drag_origin("west", self.START, 300, 120),
+                         (40, 50))
+
+    def test_dragging_the_top_edge_leaves_the_bottom_edge_where_it_was(self):
+        # A 150 px window has to start at 20 to keep its bottom edge at 170.
+        self.assertEqual(widget.drag_origin("north", self.START, 240, 150),
+                         (100, 20))
+
+    def test_dragging_a_top_left_corner_holds_both_far_edges(self):
+        self.assertEqual(widget.drag_origin("north_west", self.START, 300, 150),
+                         (40, 20))
+
+    def test_the_far_edges_are_the_ones_the_window_already_grows_from(self):
+        # East and south keep the origin, so there is nothing to correct.
+        self.assertEqual(widget.drag_origin("south_east", self.START, 300, 150),
+                         (100, 50))
 
     def test_dragging_the_right_edge_leaves_the_left_edge_where_it_was(self):
-        self.assertEqual(widget.drag_origin("east", 100, 240, 300), 100)
+        # And leaves y alone even though the panel got taller: an east handle
+        # owns neither far edge.
+        self.assertEqual(widget.drag_origin("east", self.START, 300, 150),
+                         (100, 50))
 
 
 class BillingRowTest(unittest.TestCase):
@@ -515,11 +574,12 @@ class StubEvent:
     covered above. What this pins down is the wiring between the two.
     """
 
-    def __init__(self, button=1, x=0, y=0, x_root=0):
+    def __init__(self, button=1, x=0, y=0, x_root=0, y_root=0):
         self.button = button
         self.x = x
         self.y = y
         self.x_root = x_root
+        self.y_root = y_root
         self.time = 0
 
 
@@ -541,23 +601,53 @@ class ResizeWiringTest(unittest.TestCase):
         self.window.apply_scale(1.0)
         self.width = self.window.get_size().width
 
-    def press_edge(self):
-        # The right edge, at a height clear of both corners.
+    # This panel is never shown, so GTK never allocates it and get_size() reports
+    # the height apply_scale asked for -- 1, which the rows only clamp up once
+    # there is an allocation. Every y is therefore within CORNER of the bottom,
+    # which makes a side press land on a corner rather than a pure edge. Only the
+    # top band is unambiguous here, so that is the one the vertical case uses.
+    # Both zones exercise the same wiring; the arithmetic per zone is covered
+    # above without a display.
+
+    def press_right_edge(self):
+        # Lands on south_east, for the reason above. Its horizontal half is what
+        # matters: the drag below moves in x only.
         self.window.on_click(None, StubEvent(x=self.width - 1, y=50,
-                                             x_root=500))
+                                             x_root=500, y_root=500))
+
+    def press_top_edge(self):
+        self.window.on_click(None, StubEvent(x=self.width // 2, y=1,
+                                             x_root=500, y_root=500))
 
     def test_pressing_an_edge_starts_a_resize(self):
-        self.press_edge()
+        self.press_right_edge()
         self.assertIsNotNone(self.window._resize)
 
+    def test_pressing_the_top_edge_starts_one_too(self):
+        # The half of this that arithmetic cannot catch: a press that fell through
+        # to begin_move_drag would leave the new handles dead while every zone and
+        # scale test stayed green.
+        self.press_top_edge()
+        self.assertEqual((self.window._resize or {}).get("zone"), "north")
+
+    def test_a_vertical_drag_rescales_the_panel(self):
+        self.press_top_edge()
+        # Upwards on the top edge is outwards, so the panel grows.
+        self.window.on_motion(None, StubEvent(x_root=500,
+                                              y_root=500 - widget.WIDTH // 2))
+        self.assertAlmostEqual(self.window.scale, 1.5)
+
     def test_moving_after_that_press_rescales_the_panel(self):
-        self.press_edge()
-        self.window.on_motion(None, StubEvent(x_root=500 + widget.WIDTH // 2))
+        self.press_right_edge()
+        # y_root held at the press value, so this drag is horizontal only.
+        self.window.on_motion(None, StubEvent(x_root=500 + widget.WIDTH // 2,
+                                              y_root=500))
         self.assertAlmostEqual(self.window.scale, 1.5)
 
     def test_releasing_ends_the_drag_and_saves_the_size(self):
-        self.press_edge()
-        self.window.on_motion(None, StubEvent(x_root=500 + widget.WIDTH // 2))
+        self.press_right_edge()
+        self.window.on_motion(None, StubEvent(x_root=500 + widget.WIDTH // 2,
+                                              y_root=500))
         self.window.on_release(None, StubEvent())
         self.assertIsNone(self.window._resize)
         config = store.read_json(paths.config_path(), default={}) or {}
@@ -687,6 +777,21 @@ class LimitRowsOnThePanelTest(TempHome):
         self.assertEqual(self.window.window_5h.get_text(), "$54.73")
         self.assertTrue(
             self.window.window_5h.get_style_context().has_class("muted"))
+
+    def test_the_machine_row_carries_the_weekly_dollars(self):
+        # The same seven days as the percentage above it, measured the other way:
+        # what this installation put into the account's week.
+        self.draw(self.figures())
+        self.assertEqual(self.window.week_local.get_text(), "$767.24")
+
+    def test_the_machine_row_is_a_dollar_row_and_mutes_with_them(self):
+        # It is not a limit row: no percentage, no colour, and it greys out with
+        # the other measured figures rather than keeping a confident green.
+        self.draw(self.figures())
+        for name in widget.LIMIT_CLASSES:
+            self.assertFalse(
+                self.window.week_local.get_style_context().has_class(name), name)
+        self.assertIn(self.window.week_local, self.window.usd_values)
 
     def test_a_window_that_has_reset_is_withdrawn_without_a_new_state_file(self):
         # The case that makes draw_limits reachable from the staleness poll: the

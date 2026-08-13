@@ -9,14 +9,19 @@ PRICING = {"claude-opus-5": {"input": 5.0, "output": 25.0}}
 NO_LIMITS = None
 
 
-def limits(pct_5h=11, pct_week=15, resets_at=None, age_s=60.0):
+def limits(pct_5h=11, pct_week=15, resets_at=None, week_resets_at=None,
+           age_s=60.0):
     """A utilization.read() result, as build_state now receives it."""
     return {"age_s": age_s, "rows": {
         "session": {"pct": pct_5h, "severity": "normal",
                     "resets_at": resets_at, "scope": None},
         "weekly_all": {"pct": pct_week, "severity": "normal",
-                       "resets_at": None, "scope": None},
+                       "resets_at": week_resets_at, "scope": None},
     }}
+
+
+def iso(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 
 def event(ts, msg_id, session="s1", model="claude-opus-5", out=1_000_000):
@@ -211,6 +216,25 @@ class LimitsTest(unittest.TestCase):
         state = build_state([event(self.now, "a")], PRICING, "s1", set(),
                             self.now, limits(resets_at=past))
         self.assertAlmostEqual(state["window_5h"]["usd"], 25.0)
+
+    def test_the_weekly_dollars_end_where_the_real_week_ends(self):
+        # A trailing seven days keeps a tail the real limit has already reset
+        # past, so the row would not go back to zero when the percentage does.
+        # The window is the seven days *ending at the server's reset*.
+        week_end = self.now + 3600.0
+        events = [event(week_end - 7 * 86400.0 - 60.0, "before-the-week"),
+                  event(week_end - 7 * 86400.0 + 60.0, "inside-the-week")]
+        state = build_state(events, PRICING, "s1", set(), self.now,
+                            limits(week_resets_at=iso(week_end)))
+        self.assertAlmostEqual(state["window_7d"]["usd"], 25.0)
+
+    def test_without_an_anchor_the_weekly_dollars_trail_seven_days(self):
+        # What the row showed before the server's reset time was available, and
+        # still what a machine with no cached figures sees.
+        events = [event(self.now - 7 * 86400.0 - 60.0, "older"),
+                  event(self.now - 60.0, "recent")]
+        state = build_state(events, PRICING, "s1", set(), self.now, NO_LIMITS)
+        self.assertAlmostEqual(state["window_7d"]["usd"], 25.0)
 
 
 if __name__ == "__main__":

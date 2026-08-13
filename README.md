@@ -180,7 +180,7 @@ looks wrong, is under [Known limitations](#known-limitations).
 ## What it is
 
 The panel is a small borderless window anchored to the bottom-right corner of
-your screen. It shows seven rows:
+your screen. It shows these rows:
 
 - **last turn** — USD cost of the assistant turn that just finished
 - **session** — USD cost of the current Claude Code session
@@ -193,6 +193,11 @@ your screen. It shows seven rows:
 - **week** — the same for the weekly limit: `≥17 % · Sat 02:59`. The weekday
   appears because that reset is days out, where a bare `02:59` would read as
   tonight.
+- **this machine** — USD this installation put into that same week: `$767.24`.
+  It sits directly under the percentage because the two describe one window by
+  different measures — the account's share of its limit, and your own
+  contribution to it. It empties when the percentage does, since both are bounded
+  by the reset the server reports.
 - *(separator)*
 - **billing** — how this session is paying: `team · max 5x` for a seat, `API`
   when it is billed per token, `—` when neither could be established
@@ -312,23 +317,29 @@ changing row height would re-anchor the whole panel on every turn.
 
 ### Moving and resizing it
 
-Drag the **middle** of the panel to move it. Drag its **left or right edge, or
-any corner**, to resize it: the pointer turns into a resize arrow over the 6-pixel
-band around the perimeter. Both are saved, and both have their own entry in the
-right-click menu — **Reset position** puts the panel back in the bottom-right
-corner, **Reset size** puts it back to its original size. The two are separate
-because undoing one is rarely a reason to undo the other.
+Drag the **middle** of the panel to move it. Drag **any edge or corner** to
+resize it: the pointer turns into a resize arrow over the 16-pixel band around the
+perimeter. Both are saved, and both have their own entry in the right-click
+menu — **Reset position** puts the panel back in the bottom-right corner,
+**Reset size** puts it back to its original size. The two are separate because
+undoing one is rarely a reason to undo the other.
 
 Resizing scales the whole panel — text, padding and width together — rather than
-just stretching the frame. The content is five fixed rows, so a wider window on
-its own would only add blank space around numbers that stayed exactly as small.
+just stretching the frame. The content is a fixed set of rows, so a wider window
+on its own would only add blank space around numbers that stayed exactly as small.
 The range runs from 0.7× to 3×; a drag that would go past either end stops there.
 
-Only the horizontal part of a drag counts, which is why the top and bottom edges
-are not handles. Height is a consequence of the scale, not an input: there are
-five rows and they are as tall as the font makes them. While the panel is still
-anchored in the corner it also grows leftwards whichever edge you pull, since the
-corner is what owns its position until you move it yourself.
+Pulling any edge **outwards** grows the panel, so up on the top edge and down on
+the bottom do what left and right already did. Height is never set directly — the
+rows are as tall as the font makes them — but a vertical pull is still a perfectly
+good way to say "bigger", which is the single number a resize here produces. A
+pixel means the same amount whichever way you pull, and a corner adds both
+directions, so a diagonal drag grows about twice as fast as a straight one.
+
+While the panel is still anchored in the corner it grows leftwards and upwards
+whichever edge you pull, since the corner owns its position until you move the
+panel yourself. Once you have placed it, the edge you are *not* holding stays
+where you left it.
 
 ## What the graphical session has to provide
 
@@ -599,10 +610,13 @@ your spend.
   be understated by half. Fast mode is not currently in use — every record in
   the transcripts reads `standard` — so this costs nothing today, but it would
   if that changed.
-- **The weekly *dollar* figure is a rolling 7 days**, not the fixed weekly window
-  the real limit resets on, so the tooltip's figure can include a leading tail of
-  spend the real limit has already reset past. The percentage on the row is not
-  affected — it comes from the server, which knows where its own week starts.
+- **Both *dollar* windows are only as well-placed as the reset the server last
+  reported.** With one, they are the five hours and the seven days ending at it,
+  which is why the **this machine** row empties exactly when the percentage above
+  it does. Without one — no cached figures at all — they fall back to a trailing
+  seven days and a block anchored on this machine's own first message, and then
+  the weekly figure keeps a tail the real limit has already reset past. The window
+  *length* is assumed either way: the server sends only the end.
 - **The 5h *dollar* figure falls back to a guess when no account figure is
   available.** Normally the server's reset time bounds it. Without one, the tool
   anchors the block on the first Claude Code message it can see, which is later
