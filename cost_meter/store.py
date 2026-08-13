@@ -109,10 +109,10 @@ def exclusive_lock(path, timeout=10.0, poll=0.1):
 def update_json_locked(path, lock_path, timeout=10.0):
     """Read-modify-write a JSON file with the lock held across both halves.
 
-    Several writers share config.json — the widget stores its position there and
-    cost_meter/ceilings.py stores the ceilings, for both calibrate.py and
-    limit.py. An unlocked read-modify-write silently drops whichever value the
-    other side wrote in between.
+    config.json has more than one writer — the panel keeps its position and its
+    scale there, and cost_meter/autolaunch.py the paused flag, from processes that
+    are not the hook. An unlocked read-modify-write silently drops whichever value
+    the other side wrote in between.
     """
     with exclusive_lock(lock_path, timeout=timeout):
         data = read_json(path, default={}) or {}

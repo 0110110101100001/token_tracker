@@ -1,10 +1,10 @@
 # Environment for the Claude cost meter.
 #
 # Only widget.py needs anything from here: it imports gi (PyGObject) and
-# requires GTK 3. Everything else -- tally.py, calibrate.py, cost_meter/ and the
-# tests -- is standard library only. The environment still owns every entry
-# point anyway, so there is exactly one interpreter to reason about and the
-# documented commands are identical on every machine.
+# requires GTK 3. Everything else -- tally.py, cost_meter/ and the tests -- is
+# standard library only. The environment still owns every entry point anyway, so
+# there is exactly one interpreter to reason about and the documented commands
+# are identical on every machine.
 
 [workspace]
 name = "token-calculator"
@@ -63,16 +63,9 @@ launch = "python -m cost_meter.launch"
 # bare `--` to remember and no way to typo it into silently doing nothing.
 show = "python -m cost_meter.launch --force"
 
-# Calibration. Pass flags after a bare `--` so pixi does not read them as its
-# own: pixi run calibrate -- --5h 42
-calibrate = "python calibrate.py"
-
-# Declaring a ceiling you already know, rather than deriving one from a reported
-# percentage. Same bare `--` as calibrate: pixi run limit -- --week 2000
-limit = "python limit.py"
-
-# Whether a new Claude Code session may open the panel. Same bare `--` as
-# calibrate: pixi run autolaunch -- --off | --on | --status
+# Whether a new Claude Code session may open the panel. Pass flags after a bare
+# `--` so pixi does not read them as its own:
+# pixi run autolaunch -- --off | --on | --status
 autolaunch = "python -m cost_meter.autolaunch"
 
 # Register the Stop and SessionStart hooks in ~/.claude/settings.json.

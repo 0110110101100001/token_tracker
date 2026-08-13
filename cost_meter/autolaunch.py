@@ -45,7 +45,7 @@ def set_paused(value):
     """Record the state asked for. Raises store.LockTimeout if the file is busy.
 
     Read-modify-write under the lock, like every other writer of this file: the
-    ceilings and the panel's window position live here too, and a wholesale
+    panel's window position and scale live here too, and a wholesale
     rewrite would drop whichever of them this side does not know about.
 
     Resuming removes the key rather than storing a false, so a resumed config is

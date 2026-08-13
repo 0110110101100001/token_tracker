@@ -54,8 +54,8 @@ def _spawn_lock_holder(lock_path, hold_seconds):
 
 
 def _spawn_config_writer(config_path, lock_path, hold_seconds):
-    """A calibrate.py-shaped competitor: hold the lock, then write a ceiling
-    into config.json just before releasing it.
+    """A second config writer: hold the lock, then write a key into config.json
+    just before releasing it.
 
     Writing late in the hold is the point — it is the value an unlocked read
     performed before the lock was acquired would silently destroy.
@@ -71,7 +71,7 @@ def _spawn_config_writer(config_path, lock_path, hold_seconds):
         "    print('locked', flush=True)\n"
         f"    time.sleep({hold_seconds!r})\n"
         "    data = store.read_json(config, default={}) or {}\n"
-        "    data['ceiling_5h_usd'] = 42.0\n"
+        "    data['widget_scale'] = 42.0\n"
         "    store.write_json_atomic(config, data)\n"
     )
     proc = subprocess.Popen(
@@ -189,8 +189,8 @@ class TestStore(unittest.TestCase):
 
 
 class TestUpdateJsonLocked(unittest.TestCase):
-    """config.json has two writers: the widget's position and calibrate.py's
-    ceilings. Whichever writes second must not drop the other's key."""
+    """config.json has several writers: the panel's position, its scale and the
+    paused auto-launch flag. Whichever writes second must not drop the others."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -201,12 +201,12 @@ class TestUpdateJsonLocked(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_unrelated_keys_survive_a_mutation(self):
-        store.write_json_atomic(self.config, {"ceiling_5h_usd": 42.0})
+        store.write_json_atomic(self.config, {"widget_scale": 42.0})
         with store.update_json_locked(self.config, self.lock) as config:
             config["widget_position"] = [10, 20]
         self.assertEqual(
             store.read_json(self.config),
-            {"ceiling_5h_usd": 42.0, "widget_position": [10, 20]},
+            {"widget_scale": 42.0, "widget_position": [10, 20]},
         )
 
     def test_missing_file_starts_from_an_empty_dict(self):
@@ -236,11 +236,11 @@ class TestUpdateJsonLocked(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 0.8)
         self.assertEqual(
             store.read_json(self.config),
-            {"ceiling_5h_usd": 42.0, "widget_position": [10, 20]},
+            {"widget_scale": 42.0, "widget_position": [10, 20]},
         )
 
     def test_lock_timeout_propagates_and_leaves_the_file_alone(self):
-        store.write_json_atomic(self.config, {"ceiling_5h_usd": 42.0})
+        store.write_json_atomic(self.config, {"widget_scale": 42.0})
         holder = _spawn_lock_holder(self.lock, hold_seconds=1.0)
         try:
             with self.assertRaises(store.LockTimeout):
@@ -248,15 +248,15 @@ class TestUpdateJsonLocked(unittest.TestCase):
                     pass  # pragma: no cover - must never be entered
         finally:
             _wait_for_holder(holder)
-        self.assertEqual(store.read_json(self.config), {"ceiling_5h_usd": 42.0})
+        self.assertEqual(store.read_json(self.config), {"widget_scale": 42.0})
 
     def test_an_exception_in_the_body_does_not_write(self):
-        store.write_json_atomic(self.config, {"ceiling_5h_usd": 42.0})
+        store.write_json_atomic(self.config, {"widget_scale": 42.0})
         with self.assertRaises(ValueError):
             with store.update_json_locked(self.config, self.lock) as config:
                 config["widget_position"] = [10, 20]
                 raise ValueError("boom")
-        self.assertEqual(store.read_json(self.config), {"ceiling_5h_usd": 42.0})
+        self.assertEqual(store.read_json(self.config), {"widget_scale": 42.0})
 
 
 class TestReplaceWithRetry(unittest.TestCase):

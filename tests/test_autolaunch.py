@@ -12,8 +12,8 @@ tested rather than eyeballed:
 - **Recording is untouched.** Only the SessionStart launch is suspended; the Stop
   hook keeps appending to the ledger, so a paused week leaves no hole in the
   figures.
-- **config.json has three writers now.** The ceilings, the window position and
-  this flag share one file, and an unlocked read-modify-write on any of them
+- **config.json has three writers now.** The window position, the panel's scale
+  and this flag share one file, and an unlocked read-modify-write on any of them
   silently drops whichever key the other side wrote moments earlier.
 """
 
@@ -73,8 +73,8 @@ class PausedFlagTest(TempHome):
 
     def test_pausing_twice_leaves_it_paused(self):
         # The flag names the state you want, not a transition you have to be
-        # mid-way through -- the same reason calibrate's --clear is safe to
-        # repeat. Anything that pauses is free to do so without checking first.
+        # mid-way through. Anything that pauses is free to do so without
+        # checking first.
         autolaunch.set_paused(True)
         autolaunch.set_paused(True)
         self.assertTrue(autolaunch.paused())
@@ -102,12 +102,12 @@ class PausedFlagTest(TempHome):
 
     def test_the_other_settings_survive_being_paused(self):
         # The property that breaks silently: an unlocked rewrite here would drop
-        # a calibration, and the row would quietly go back to dollars.
-        self.write_config({"ceiling_5h_usd": 40.0, "widget_position": [10, 20]})
+        # the panel's remembered geometry, and it would reopen somewhere else.
+        self.write_config({"widget_scale": 1.4, "widget_position": [10, 20]})
         autolaunch.set_paused(True)
         autolaunch.set_paused(False)
         self.assertEqual(self.config(),
-                         {"ceiling_5h_usd": 40.0, "widget_position": [10, 20]})
+                         {"widget_scale": 1.4, "widget_position": [10, 20]})
 
 
 class LaunchTest(TempHome):
