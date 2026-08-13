@@ -43,7 +43,8 @@ Measured on 2026-08-13 against Claude Code 2.1.231, not assumed.
 | `limit_dollars`, `used_dollars`, `remaining_dollars` are all `null` | Percentages only. The ceiling cannot be read, so a dollar-denominated ceiling stays underivable |
 | Percentages are whole integers | The authoritative figure cannot express sub-percent movement |
 | Cache writes are throttled to `5 min` (`IEb=300000`) and Claude Code discards its own cache past `1 h` (`xEb=3600000`) | The anchor is coarse in time; a per-turn percentage is not available from it |
-| Observed age during continuous work: `30 min` | Refresh is not driven by turns. The panel must show the age rather than imply freshness |
+| **Refresh is triggered by session start and by the user running `/usage`, not by turns.** Measured: a 4-hour gap (12:55 → 17:00) across continuous work, then an immediate refresh when `/usage` ran | The panel cannot expect a fresh figure. Discarding stale ones would leave the rows empty most of the day, so the design has to make a stale figure *useful* instead |
+| Within a window, usage only ever grows | A stale percentage is a valid **lower bound**, not an approximation. It can be stated as one and is never optimistic |
 | `severity` arrives from the server (`normal` observed) | Row colour need not be inferred from thresholds |
 | Transcripts carry no limit state — the only structured hit is `error.rateLimits`, `null` in both occurrences | The transcript pipeline cannot supply this; a second source is genuinely required |
 | `stats-cache.json` is computed from the same local transcripts, and its `costUSD` is `0` | Not a usable source |
@@ -76,12 +77,13 @@ that would otherwise show a confident wrong number:
   `oauthAccount.accountUuid`. After a re-login to a different account the stale
   cache would otherwise be presented as this account's usage. Claude Code makes
   the same comparison and discards the cache on a mismatch.
-- **Age.** From `fetchedAtMs`. Past one hour the data is unusable — the same
-  threshold Claude Code applies to its own cache, rather than a number invented
-  here.
+- **Age.** From `fetchedAtMs`, and only as a sanity cap: past **seven days** the
+  figure is refused, because the weekly window has certainly reset by then and no
+  bound survives it. Claude Code's own one-hour threshold is deliberately *not*
+  used — it discards a figure it can re-fetch on demand, which the panel cannot.
 
-The parsed age travels onward even when usable, because the panel has to be able
-to say how old the figure is.
+The parsed age travels onward, because the panel has to be able to say how old
+the figure is.
 
 ### `cost_meter/paths.py`
 
@@ -128,19 +130,27 @@ no anchor is available.
 - **The week row gains a reset time**, which the server supplies for
   `weekly_all`. README's note that the weekly cap has no boundary this tool can
   locate is now false and goes with it.
-- **The `~` marker is dropped from these rows.** Its stated reason was that a
-  declared ceiling understates the account; a server-supplied percentage is not
-  an estimate, so the reason does not survive.
+- **The `~` marker becomes `≥`, and it is unconditional.** `~` meant an estimate
+  that could be high or low. `≥` states a floor, which is what an account figure
+  always is: usage within a window only grows, so the percentage was true when it
+  was fetched and can only have risen since. Unconditional rather than only on a
+  stale figure — a marker that came and went would imply the unmarked form is
+  exact, and it never is, not even twelve seconds later.
+- **A row whose `resets_at` has passed is withdrawn**, whatever the cache's age.
+  Once the window has reset the figure describes a window that no longer exists,
+  and no bound survives that; age alone cannot detect it. Evaluated when the row
+  is drawn, not when `state.json` is written, because a block can reset while no
+  turn is happening and nothing would rewrite the file.
 - **Colour comes from `severity`**, not from thresholds applied to the
   percentage.
-- When the anchor is stale or absent, the percentage and the reset time are
-  withdrawn and the row shows its dollar figure alone — the project's existing
-  preference for a dollar over an invented number, and the same state the row
-  had before any calibration existed.
-- **The anchor's age is not on the row.** A figure up to an hour old is normal
-  here, so an age beside every percentage would be permanent noise; past an hour
-  the percentage is withdrawn entirely, which says the same thing more plainly.
-  `age_s` reaches the tooltip instead.
+- When there is no account figure — no cache, another account's, older than the
+  sanity cap, or withdrawn because its window has reset — the row shows its
+  dollar figure alone, which is the same state it had before any calibration
+  existed.
+- **The anchor's age is not on the row.** Hours-old figures are the normal case,
+  so an age beside every percentage would be permanent noise, and the `≥` already
+  says the figure is a floor rather than a reading. `age_s` reaches the tooltip
+  instead, along with the fact that `/usage` is what refreshes it.
 - **The tooltip is new.** The panel has none today — the 2026-08-10 design
   mentions one, but it was never built. So this change adds it, on the two limit
   rows only: `$71.46 on this machine · account at 20 %, resets 19:04`, plus the

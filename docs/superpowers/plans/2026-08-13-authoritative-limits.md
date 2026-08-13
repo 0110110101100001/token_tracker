@@ -189,7 +189,11 @@ git commit -m "feat: locate ~/.claude.json, where the account's limits are cache
 - Consumes: `paths.claude_config_path()`, `store.read_json` (Task 1).
 - Produces:
   - `utilization.SESSION = "session"`, `utilization.WEEKLY = "weekly_all"`
-  - `utilization.MAX_AGE_SECONDS = 3600.0`
+  - `utilization.MAX_AGE_SECONDS = 7 * 86400.0` — a sanity cap, not a freshness
+    rule. Refresh is triggered by session start and by the user running `/usage`,
+    so hours-old figures are the normal case; a stale percentage is still a valid
+    lower bound because usage within a window only grows. Past a week the weekly
+    window has certainly reset and no bound survives.
   - `utilization.read(now: float | None = None) -> dict | None`, returning
     `{"age_s": float, "rows": {kind: {"pct": int, "severity": str | None, "resets_at": str | None, "scope": str | None}}}`
 
@@ -282,9 +286,17 @@ class UtilizationTest(TempHome):
         self.write(LIMITS, account="acct-2", cache_account="acct-1")
         self.assertIsNone(utilization.read(now=NOW))
 
-    def test_a_cache_older_than_claude_code_would_use_is_refused(self):
+    def test_a_cache_past_the_sanity_cap_is_refused(self):
         self.write(LIMITS, fetched_s=NOW - utilization.MAX_AGE_SECONDS - 1.0)
         self.assertIsNone(utilization.read(now=NOW))
+
+    def test_an_hours_old_cache_is_still_an_answer(self):
+        # The normal case, not an error: refresh happens on session start and on
+        # /usage, so hours pass between them. The figure is a floor, and the
+        # panel says so with the >= marker rather than throwing it away.
+        self.write(LIMITS, fetched_s=NOW - 4 * 3600.0)
+        self.assertEqual(utilization.read(now=NOW)["rows"][utilization.SESSION]["pct"],
+                         11)
 
     def test_a_cache_written_by_a_clock_ahead_of_ours_is_not_fresh_forever(self):
         self.write(LIMITS, fetched_s=NOW + 600.0)
@@ -329,10 +341,15 @@ import time
 
 from . import paths, store
 
-# Claude Code discards its own copy of this cache past an hour. The same
-# threshold is used here rather than one invented locally: a figure Claude Code
-# would refuse to show is not one this panel should show either.
-MAX_AGE_SECONDS = 3600.0
+# A sanity cap, not a freshness rule. Refresh is triggered by session start and
+# by the user running /usage, so an hours-old figure is the normal case -- and it
+# is still worth showing, because usage within a window only grows and a stale
+# percentage is therefore a floor rather than a guess. Past a week the weekly
+# window has certainly reset and no bound survives it.
+#
+# Claude Code's own one-hour threshold is deliberately not used: it discards a
+# figure it can re-fetch on demand, which this panel cannot.
+MAX_AGE_SECONDS = 7 * 86400.0
 
 # The two limits the panel draws, named as the server names them.
 SESSION = "session"
@@ -655,7 +672,8 @@ git commit -m "feat: carry the account's limit figures through to state.json"
 
 **Interfaces:**
 - Consumes: `state["limits"]` (Task 3), `utilization.SESSION` / `utilization.WEEKLY` (Task 2).
-- Produces: `widget.severity_class(severity, pct) -> str`, `widget.window_row(window, limit) -> tuple[str, str]`, `widget.window_tooltip(window, limit, age_s) -> str`, `CostMeter.draw_limits()`.
+- Produces: `widget.severity_class(severity, pct) -> str`, `widget.window_expired(limit, now) -> bool`, `widget.window_row(window, limit, now=None) -> tuple[str, str]`, `widget.window_tooltip(window, limit, age_s, now=None) -> str`, `CostMeter.draw_limits()`.
+- `now` is a parameter rather than read inside, so the expiry rule is testable without waiting for a real window to reset. It defaults to `time.time()` for the panel's call sites.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -673,13 +691,36 @@ In `tests/test_widget.py`, replace the `window_row` tests (lines ~168-215) with:
         # describes the account, and one row reads as one claim.
         self.assertEqual(
             widget.window_row({"usd": 6.4}, {"pct": 31, "severity": "normal"}),
-            ("31 %", "green"))
+            ("≥31 %", "green"))
+
+    def test_the_percentage_is_always_marked_as_a_floor(self):
+        # Usage within a window only grows, so the figure was true when it was
+        # fetched and can only have risen. Unconditional: a marker that came and
+        # went would imply the unmarked form is exact, and it never is.
+        fresh = widget.window_row({"usd": 1.0}, {"pct": 5, "severity": "normal"})
+        self.assertTrue(fresh[0].startswith("≥"), fresh[0])
 
     def test_the_reset_time_rides_with_the_percentage(self):
         text = widget.window_row(
             {"usd": 51.04},
             {"pct": 6, "severity": "normal", "resets_at": self.iso})[0]
-        self.assertTrue(text.startswith("6 % · "), text)
+        self.assertTrue(text.startswith("≥6 % · "), text)
+
+    def test_a_window_that_has_already_reset_is_withdrawn(self):
+        # The figure describes a window that no longer exists, so no bound
+        # survives it -- and age alone cannot detect that.
+        past = datetime.fromtimestamp(1000.0, timezone.utc).isoformat()
+        self.assertEqual(
+            widget.window_row({"usd": 6.4},
+                              {"pct": 31, "severity": "normal",
+                               "resets_at": past}, now=2000.0),
+            ("$6.40", "muted"))
+
+    def test_a_row_with_no_reset_time_never_expires(self):
+        self.assertEqual(
+            widget.window_row({"usd": 6.4}, {"pct": 31, "severity": "normal",
+                                             "resets_at": None},
+                              now=2000.0)[0], "≥31 %")
 
     def test_the_servers_severity_decides_the_colour(self):
         # It knows where the thresholds are, and they move with promotions and
@@ -704,8 +745,14 @@ In `tests/test_widget.py`, replace the `window_row` tests (lines ~168-215) with:
             {"usd": 71.46},
             {"pct": 20, "severity": "normal", "resets_at": self.iso}, 1800.0)
         self.assertIn("$71.46 on this machine", text)
-        self.assertIn("account at 20 %", text)
+        self.assertIn("at least 20 %", text)
         self.assertIn("30 min", text)
+
+    def test_the_tooltip_says_what_refreshes_the_figure(self):
+        # The one thing a reader can act on: nothing else moves it.
+        text = widget.window_tooltip(
+            {"usd": 71.46}, {"pct": 20, "severity": "normal"}, 1800.0)
+        self.assertIn("/usage", text)
 
     def test_the_tooltip_says_so_when_there_is_no_account_figure(self):
         text = widget.window_tooltip({"usd": 71.46}, None, None)
@@ -770,7 +817,21 @@ def _pct_of(limit):
     return pct
 
 
-def window_row(window, limit):
+def window_expired(limit, now):
+    """Whether this figure describes a window that has already reset.
+
+    Age cannot answer this. A figure fetched four hours ago still bounds a weekly
+    window, and one fetched twenty minutes ago bounds nothing if the 5-hour block
+    turned over in between. The reset time the server sent is what decides.
+
+    A row without a reset time never expires: there is nothing to compare, and
+    the older cache shape does not always carry one.
+    """
+    end = summary.parse_updated_at((limit or {}).get("resets_at"))
+    return end is not None and now >= end
+
+
+def window_row(window, limit, now=None):
     """The text and style class for one limit row, as (text, class).
 
     With an account figure the row is that figure and nothing else. The
@@ -780,44 +841,60 @@ def window_row(window, limit):
     doing wrongly. The dollars move to the tooltip, which has room to say which
     is which.
 
+    The percentage is always marked `≥`. Refresh happens on session start and
+    when the user runs `/usage`, so the figure is usually hours old — and usage
+    within a window only grows, which makes it a floor rather than a reading.
+    Unconditional, because a marker that came and went would imply the unmarked
+    form is exact, and it never is: even a twelve-second-old figure has had
+    twelve seconds to rise. This is the `~` marker's replacement, and it says
+    something stronger — `~` admitted the number could be wrong either way.
+
     The reset time rides with the percentage, as it always has: what it is for
-    is saying which block the figure describes.
+    is saying which window the figure describes. Once that time has passed the
+    row is withdrawn, because the window it described is gone.
 
     Without an account figure the row falls back to the dollars alone, muted,
     exactly as it read before any of this existed. Interpolating a percentage
-    from local dollars between refreshes would be an invented number.
+    from local dollars would be an invented number.
     """
+    now = time.time() if now is None else now
     pct = _pct_of(limit)
-    if pct is None:
+    if pct is None or window_expired(limit, now):
         return _fmt_usd(window.get("usd")), "muted"
     resets = _fmt_reset(limit.get("resets_at"))
     tail = "" if resets is None else f" · {resets}"
-    return f"{pct} %{tail}", severity_class(limit.get("severity"), pct)
+    return f"≥{pct} %{tail}", severity_class(limit.get("severity"), pct)
 
 
-def window_tooltip(window, limit, age_s):
+def window_tooltip(window, limit, age_s, now=None):
     """The tooltip for one limit row: which figure belongs to which scope.
 
     This is where the dollar figure went when it left the row, and the only
     place the two scopes are stated rather than implied.
 
-    The age is here for the same reason it is not on the row: a figure up to an
-    hour old is normal, so an age beside every percentage would be permanent
-    noise — while somebody wondering why a percentage has not moved for twenty
-    minutes wants exactly this.
+    The age is here rather than on the row because hours-old figures are the
+    normal case, so an age beside every percentage would be permanent noise —
+    while somebody wondering why a percentage has not moved all afternoon wants
+    exactly this, together with the one thing that would move it.
     """
+    now = time.time() if now is None else now
     lines = [f"{_fmt_usd(window.get('usd'))} on this machine"]
     pct = _pct_of(limit)
     if pct is None:
         lines.append("no account figure available")
         return "\n".join(lines)
+    if window_expired(limit, now):
+        lines.append("the account figure describes a window that has reset")
+        return "\n".join(lines)
     resets = _fmt_reset(limit.get("resets_at"))
-    account = f"account at {pct} %"
+    account = f"account at least {pct} %"
     if resets is not None:
         account += f", resets {resets}"
     lines.append(account)
     if age_s is not None:
-        lines.append(f"account figure {summary.format_age(age_s)} old")
+        lines.append(f"figure {summary.format_age(age_s)} old; /usage refreshes it")
+    else:
+        lines.append("/usage refreshes it")
     return "\n".join(lines)
 ```
 
@@ -918,7 +995,7 @@ Expected: PASS. `widget.py --selftest` renders a frame; it does not exercise too
 - [ ] **Step 7: See it on screen**
 
 Run: `pixi run show`
-Expected: the 5h row reads like `11 % · 13:29` in green, the week row like `15 % · Sat 02:59`, and hovering either shows the dollars with each scope named. Compare both percentages against `/usage` in Claude Code — they should now agree exactly rather than approximately.
+Expected: the 5h row reads like `≥12 % · 18:30` in green, the week row like `≥17 % · Sat 02:59`, and hovering either shows the dollars with each scope named plus the figure's age. Run `/usage` in Claude Code and then `pixi run tally` — the panel's percentages should agree with `/usage` exactly, because it is the same source.
 
 - [ ] **Step 8: Commit** (ask Martin first)
 
@@ -1016,19 +1093,25 @@ asks the server how much of each limit the account has used and caches the answe
 in `~/.claude.json`; the panel reads it from there. Nothing to calibrate, and
 nothing to re-calibrate when your plan or a promotion moves the ceiling.
 
-They are refreshed on a five-minute floor and are often a good deal older than
-that, so a percentage that has not moved for twenty minutes is normal — hover
-the row to see how old the figure is, along with what this machine has spent in
-that window. Past an hour the percentage is withdrawn and the row shows dollars
-alone, which is the same threshold Claude Code applies to its own copy.
+**`≥` is not hedging.** Claude Code re-asks the server when a session starts and
+when you run `/usage`, and at no other time — so the figure on the row is usually
+hours old. Usage within a window only ever grows, which makes an old percentage a
+floor rather than a guess: `≥17 %` means at least 17 %, never less. Run `/usage`
+to pull a fresh one; hover the row to see how old the current one is and what
+this machine has spent in that window.
+
+A row goes back to showing dollars alone when there is no account figure to show
+— you have never run Claude Code on this machine, the cache belongs to a
+different login, or the window it described has since reset.
 ```
 
 3. **Panel rows** — the two limit rows no longer carry dollars:
 
 ```markdown
-- **5h window** — how much of the account's 5-hour limit is used: `11 % · 13:29`,
-  where `13:29` is the clock time that block resets. Hover for what this machine
-  spent in the block. `$6.40` on its own means no account figure was available.
+- **5h window** — how much of the account's 5-hour limit is used, as a floor:
+  `≥12 % · 18:30`, where `18:30` is the clock time that block resets. Hover for
+  what this machine spent in the block and how old the figure is. `$6.40` on its
+  own means no account figure was available.
 - **week** — the same for the weekly limit, with its own reset time
 ```
 

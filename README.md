@@ -4,13 +4,13 @@ A bottom-right, always-on-top GTK panel that shows what your Claude Code work
 costs. It refreshes itself after every assistant turn, driven by a `Stop`
 hook — you never have to run anything by hand for the numbers to move.
 
-It runs on **Linux and Windows**. It counts **only the Claude Code work done on
-the machine it runs on**, which is the first thing to understand about it — see
-[What it counts](#what-it-counts).
+It runs on **Linux and Windows**. Its **dollar figures** count only the Claude
+Code work done on the machine it runs on, which is the first thing to understand
+about it; its **limit percentages** come from the server and cover the whole
+account — see [What it counts](#what-it-counts).
 
-**Jump to:** [Install](#install) · [Calibrate](#calibrate) ·
-[Un-calibrate](#un-calibrate) · [Uninstall](#uninstall) ·
-[Troubleshooting](#troubleshooting)
+**Jump to:** [Install](#install) · [Limit percentages](#limit-percentages) ·
+[Uninstall](#uninstall) · [Troubleshooting](#troubleshooting)
 
 ## Install
 
@@ -63,47 +63,28 @@ been solved or smoke-tested, so it is not claimed.
 What the installer writes, and why the hook paths look the way they do, is in
 [Install, in detail](#install-in-detail).
 
-## Calibrate
+## Limit percentages
 
-Fresh out of the box the **5h window** and **week** rows show dollars only. The
-percentages appear once you calibrate, which takes two commands:
+There is nothing to set up. The **5h window** and **week** rows show the
+account's own figures — the same ones `/usage` prints — because Claude Code asks
+the server for them and caches the answer in `~/.claude.json`, and the panel reads
+it from there. No calibration, and nothing to redo when your plan changes or a
+promotion moves the ceiling.
 
-1. Run `/usage` inside Claude Code and read the percentage it reports for each
-   window.
-2. Feed those percentages back in — `<pct>` is a number between 1 and 100:
+**`≥` is not hedging.** Claude Code re-asks the server when a session starts and
+when you run `/usage`, and at no other time, so the figure on the row is usually
+hours old. Usage within a window only ever grows, which makes an old percentage a
+floor rather than a guess: `≥17 %` means at least 17 %, never less. Run `/usage`
+when you want a fresh one.
 
-   ```bash
-   pixi run calibrate -- --5h <pct>
-   pixi run calibrate -- --week <pct>
-   ```
+Hover either row for what this machine spent in that window, how old the account
+figure is, and the reset time in full.
 
-The bare `--` matters: without it pixi reads `--5h` as one of its own flags. Each
-run divides your currently-recorded spend by the percentage you gave it, stores
-the resulting ceiling in `data/config.json`, and redraws the panel immediately.
-
-Once the 5h row has a percentage it also names the time its block resets. Check
-that against the time `/usage` prints before you trust the percentage — why that
-check matters, and when to re-calibrate, is under [Calibration](#calibration).
-
-**If you already know your ceiling**, skip the derivation and write it in
-directly — `pixi run limit -- --week 2000`. That is also the only thing that
-works when your work is split across machines, where no `/usage` reading yields
-a correct ceiling at all: see [Declaring a known limit](#declaring-a-known-limit).
-
-## Un-calibrate
-
-To undo it — a mistyped percentage, the wrong window read, or you would rather
-just see dollars:
-
-```bash
-pixi run calibrate -- --clear         # both windows
-pixi run calibrate -- --clear-5h      # or one at a time
-pixi run calibrate -- --clear-week
-```
-
-The row goes straight back to a dollar figure with no percentage. Each run
-reports what it actually removed, clearing something that was never calibrated is
-not an error, and it is safe to run twice.
+A row falls back to a dollar figure alone when there is no account figure to show
+— Claude Code has never run on this machine, the cache belongs to a different
+login, or the window it described has since reset. What is checked before a figure
+is trusted, and what replaced the old calibration, is under
+[Where the limit figures come from](#where-the-limit-figures-come-from).
 
 ## Keep the panel closed
 
@@ -169,29 +150,29 @@ reset (see [Files](#files)).
 
 Worth reading before you trust a figure on the panel.
 
-- **This machine, this account, and nothing else.** The whole input is the
-  Claude Code transcripts under `~/.claude/projects/` on the computer the tool
-  runs on. Claude Code on a second machine, under another user account, on the
-  other side of a dual boot, or on Windows beside WSL writes its transcripts
-  somewhere this installation never looks. claude.ai, the desktop app and the
-  phone write no local transcripts at all. All of that spends your subscription
-  without moving a number here.
+- **The dollar rows: this machine, this account, and nothing else.** Their whole
+  input is the Claude Code transcripts under `~/.claude/projects/` on the computer
+  the tool runs on. Claude Code on a second machine, under another user account,
+  on the other side of a dual boot, or on Windows beside WSL writes its
+  transcripts somewhere this installation never looks. claude.ai, the desktop app
+  and the phone write no local transcripts at all. All of that spends your
+  subscription without moving a dollar figure here.
 - **The dollar figures are an API-equivalent, not an invoice.** They price your
   token counts at published API rates, which is a consistent way to weight and
   compare usage. On a subscription it is not a bill you will receive.
-- **The 5h and week percentages are estimates**, derived from ceilings you
-  calibrate against your own `/usage` readings. `/usage` remains the authority on
-  limit state; this panel is a continuously-updated approximation of it.
+- **The limit percentages are the account's, and they are floors.** They come
+  from the server, so they cover every machine, claude.ai and the phone alike —
+  the machine boundary above does not apply to them. What they carry instead is
+  age: the figure was true when Claude Code last asked, and usage since then has
+  only pushed it up, which is why the row says `≥`.
 
-The first point is the one that bites hardest, and it bites through calibration:
-a ceiling derived from locally-recorded spend quietly absorbs whatever usage this
-installation cannot see, which holds up while that share stays roughly constant
-and drifts as soon as it does not. If you move your work between machines
-occasionally, recalibrate rather than trusting the percentage. If it is split
-between them habitually, recalibration cannot help — the two numbers the ratio
-needs describe different scopes, and no reading of `/usage` reconciles them.
-Declare the ceiling instead: see
-[Declaring a known limit](#declaring-a-known-limit).
+The two scopes are deliberately never mixed on one row. A dollar figure beside a
+percentage reads as one claim, and dividing one by the other is exactly the
+mistake this panel used to make: it derived the percentage that way, from a
+ceiling calibrated against local spend, and the result was wrong by however much
+work happened elsewhere — flatteringly wrong, since the unseen usage was missing
+from the numerator only. The dollars now live in the row's tooltip, where each
+figure can be named for what it is.
 
 The full list, including the ones that are only worth knowing once something
 looks wrong, is under [Known limitations](#known-limitations).
@@ -205,39 +186,38 @@ your screen. It shows seven rows:
 - **session** — USD cost of the current Claude Code session
 - **today** — USD cost since local midnight
 - *(separator)*
-- **5h window** — USD spent in the *current 5-hour block*: `$71.46` on its own
-  until calibrated, and `$71.46 ~20 % · 19:04` afterwards, where `19:04` is the
-  clock time that block resets
-- **week** — the same for the trailing 7 days, with no reset time (the weekly
-  cap has no block boundary this tool can locate)
+- **5h window** — how much of the account's 5-hour limit is used, as a floor:
+  `≥12 % · 18:30`, where `18:30` is the clock time that block resets. Hover for
+  what this machine spent in the block. `$54.73` alone means no account figure was
+  available.
+- **week** — the same for the weekly limit: `≥17 % · Sat 02:59`. The weekday
+  appears because that reset is days out, where a bare `02:59` would read as
+  tonight.
 - *(separator)*
 - **billing** — how this session is paying: `team · max 5x` for a seat, `API`
   when it is billed per token, `—` when neither could be established
 
 The 5-hour limit is a **fixed block, not a trailing five hours**. A block opens
-on the first message you send after the previous one expired and runs five hours
-from that message, which is why `/usage` names a reset time instead of counting
-down continuously. Spend in the previous block stops counting the moment the new
-one opens, even though it is still only minutes old. Once a block expires with no
-new message, the row reads `$0.00` and shows no reset time: nothing is counted
-against the limit until the next message opens the next block.
+on the first message sent after the previous one expired and runs five hours from
+that message, which is why `/usage` names a reset time instead of counting down
+continuously. The server tells the panel when the open block ends, and the
+tooltip's dollar figure is bounded by that same window, so the two halves of the
+row describe the same five hours.
 
-The reset time is on the row because it is the one figure here that can be
-checked against `/usage` directly. If the panel says `19:04` and `/usage` says it
-resets at 7pm, the two are describing the same block and the percentage beside it
-is trustworthy. If they disagree, the calibration is measuring the wrong window
-and the percentage should not be believed.
+That matters more than it sounds: left to guess, this installation would open the
+block on its own first message, and a block opened on another machine — or in the
+browser — began earlier than anything it can see. Taking the boundary from the
+server removes the guess.
 
-That is also why it appears only alongside a percentage. What the time is *for*
-is saying which block the estimate beside it describes; with no percentage on
-the row there is nothing for it to qualify, and a bare clock time next to a
-dollar figure reads as a second unrelated claim rather than as context for the
-first. An uncalibrated row shows the dollars alone.
+The reset time rides with the percentage, as it always has: what it is *for* is
+saying which window the figure describes. When that time passes, the row is
+withdrawn rather than left standing — the window it described is gone, and no
+floor survives it — and the row shows dollars alone until the next figure arrives.
 
-The dollar figure never goes away, because it is the part that is measured: the
-percentage is only ever an estimate against a ceiling you derived yourself, and
-`~` is what marks it as one. Only the percentage carries the green/amber/red
-colour.
+Only the percentage carries the green/amber/red colour, and the colour comes from
+the server's own severity rather than from thresholds compiled in here. The
+thresholds move: this account is currently carrying a +50 % weekly promotion,
+which no hardcoded number would follow.
 
 One more row appears only when needed. It carries two kinds of warning:
 
@@ -290,14 +270,14 @@ the same rule the **session** row already follows.
 
 ### Rolling figures
 
-All five value rows roll to their new figure rather than snapping to it: slow
+The three dollar rows roll to their new figure rather than snapping to it: slow
 start, fast middle, slow settle. It is there so a turn that cost $4 and a turn
 that cost $0.04 stop looking alike; without it the number is simply different
 next time you glance at it, and nothing draws the eye to the fact that anything
 was added.
 
-The four cumulative rows — **session**, **today**, **5h window**, **week** —
-roll from their previous total. **last turn** is a delta rather than a running
+The two cumulative rows — **session** and **today** — roll from their previous
+total. **last turn** is a delta rather than a running
 total, so it counts up **from zero** on every turn instead: the distance between
 what this turn cost and what the previous one cost is not a quantity anybody is
 watching, and rolling between the two would run the row *downwards* to announce
@@ -310,16 +290,15 @@ turns costing the same cent are still two turns; what marks a turn as new is
 The roll lasts **one second plus 25 ms for every dollar it covers**, so $40
 added takes two seconds and a few cents take barely more than the base second.
 A fixed duration would make the expensive turn — the one worth watching — the
-one that blurs past fastest. The length is set from the longest of the five
-rows, since they share a clock, and a falling row (a 5-hour block resetting)
-takes as long as a rising one. Nothing about the row dims or fades while it
+one that blurs past fastest. The length is set from the longest of the three
+rows, since they share a clock. Nothing about the row dims or fades while it
 moves: only the figure changes.
 
 What deliberately does **not** roll:
 
-- **the percentage and the reset time** on a limit row. They hold still while
-  the dollars beside them move: the percentage is a rounded estimate against a
-  ceiling you derived yourself, and it is the least measured thing on the panel.
+- **the two limit rows.** There is nothing to tween between `≥11 %` and `≥12 %`,
+  and the figure behind them changes at most every few hours rather than every
+  turn. They are repainted when the state changes and left alone in between.
 - **anything, while the state is stale.** Stale figures are not being presented
   as current, and rolling them would say the opposite. They land on their last
   known values and stay put.
@@ -518,76 +497,44 @@ $null | pixi run tally        # Windows
 Either way the point is the same: `tally` reads the hook payload from stdin, so
 it must be given one that ends rather than a terminal it will wait on.
 
-## Calibration
+## Where the limit figures come from
 
-Claude Code's subscription limit state (the percentages `/usage` reports)
-is not stored anywhere locally, so this tool cannot read it — only estimate
-it against your own spend. Before calibration, the **5h window** and **week**
-rows show dollar amounts only, with no percentage: showing no number is the
-honest answer when the real ceiling is unknown, and inventing one would be
-worse than showing nothing.
+Claude Code asks the server how much of each limit the **account** has used, and
+caches the answer in `~/.claude.json` under `cachedUsageUtilization`. That is the
+panel's whole source for the two limit rows: percentages, reset times and the
+severity that colours them. The commands are up top, under
+[Limit percentages](#limit-percentages) — there are none, which is the point.
 
-The commands themselves are up top, under [Calibrate](#calibrate) and
-[Un-calibrate](#un-calibrate). What follows is when to run them and what the
-numbers mean.
+**Nothing here reaches the network**, and no credential is read. The cache is a
+side effect of Claude Code running; the panel only reads the file.
 
-**Check the reset time before you trust a `--5h` percentage.** Once the row is
-calibrated it names the time its block resets; `/usage` names the same thing. If
-they match, both are describing the same block and the derived ceiling is sound.
-If they don't, the percentage is wrong — the two sides are dividing by spend from
-different windows, and the ceiling absorbs the difference rather than the error
-being visible. The check comes after the calibration rather than before it,
-because an uncalibrated row carries no reset time to compare: calibrate, look,
-and `--clear-5h` again if the two disagree.
+Three things are checked before a figure is shown, each for a way it could be
+confidently wrong:
 
-**Re-calibrate after a long gap in usage, not in the middle of one block.** The
-ceiling is a ratio, so it is only as good as the pair of numbers it came from.
-Calibrating twice inside one block should give the same ceiling both times; if it
-doesn't, something upstream of the ratio is wrong.
+- **The account.** The cache records which account it describes. After logging in
+  as somebody else the old figures would otherwise be presented as the new
+  account's; on a mismatch they are dropped. Claude Code makes the same check.
+- **The window.** Each row carries its own reset time, and once that has passed
+  the figure describes a window that no longer exists. Age cannot detect this — a
+  four-hour-old weekly figure is fine, a twenty-minute-old 5-hour figure is
+  worthless if the block turned over in between — so the reset time is what
+  decides.
+- **Sanity.** Past a week the figure is refused outright: the weekly window has
+  certainly reset by then, so no floor survives it. This is deliberately *not*
+  Claude Code's own one-hour threshold — it discards a figure it can re-fetch on
+  demand, and the panel cannot ask for one.
 
-A clear cannot be combined with a `--5h` or `--week` in the same run: the two
-contradict each other, and the run is rejected before anything is read or
-written rather than resolved by argument order.
+The previous design derived these percentages instead, by dividing locally
+recorded spend by a ceiling you calibrated against a `/usage` reading. That is
+gone, and so are `pixi run calibrate` and `pixi run limit`. It had two failures
+this does not: the ratio paired one machine's dollars with the whole account's
+percentage, so it was wrong by however much work happened elsewhere; and a
+ceiling silently expired whenever a plan changed or a promotion moved the limit,
+with nothing on screen to say so.
 
-Spend is measured in USD-equivalent rather than raw tokens because the
-models draw on the subscription limit unevenly — an Opus token costs the
-limit more than a Sonnet token — and pricing already carries those per-model
-weights, so converting through USD folds that difference in automatically
-instead of requiring a second, separate weighting scheme.
-
-Calibrate on the machine you do most of your work on, and recalibrate if that
-changes. The ceiling is derived from spend this installation can see, so it
-silently folds in whatever share of your usage happens elsewhere — see
-[What it counts](#what-it-counts). That is stable while the share is, and wrong
-as soon as you move your work.
-
-### Declaring a known limit
-
-Calibration derives the ceiling from a ratio. If you already know the ceiling —
-a plan's weekly cap, say — write it in directly and skip the derivation:
-
-```bash
-pixi run limit -- --week 2000
-pixi run limit -- --5h 130
-```
-
-The same bare `--` applies, and the values are USD-equivalent, on the same
-scale as the dollar figures the rows already show.
-
-This is the answer when calibration cannot work rather than merely being
-imprecise: with the work split across machines, the spend the ratio divides is
-this installation's while the percentage is the whole account's, so no reading
-of `/usage` produces a correct ceiling. A declared one changes what the
-percentage claims — this installation's share of a known bound, rather than an
-estimate of account-wide consumption. It keeps its `~`, and for a reason: with
-nothing absorbing the usage this installation cannot see, it understates the
-account by however much the other machines contribute.
-
-Unlike `calibrate`, `limit` needs no recorded spend: there is no ratio to take.
-
-There is one ceiling per window however it arrived, so the clear flags are
-shared — `pixi run limit -- --clear-week` and
-`pixi run calibrate -- --clear-week` are the same operation.
+The dollar rows are still measured in USD-equivalent rather than raw tokens,
+because the models draw on the limit unevenly — an Opus token costs the limit more
+than a Sonnet token — and pricing already carries those per-model weights.
 
 ## Pricing
 
@@ -618,17 +565,21 @@ your spend.
 
 ## Known limitations
 
-- **It counts one machine, not a subscription.** `~/.claude/projects/` on the
-  computer the tool runs on is the entire input; there is no account-wide source
-  to read, since Claude Code keeps no such thing locally. So the panel is a
-  per-installation view of usage that is really billed per subscription. Nothing
-  warns you about the gap — invisible usage is indistinguishable from no usage —
-  and the effect is worst on the two limit rows, which compare a partial spend
-  against a ceiling the whole subscription shares. Running the tool on each
-  machine you use gives each one its own honest local ledger, but does not add
-  them up; there is deliberately no shared store, because merging ledgers across
-  machines means reconciling clocks and de-duplicating sessions, which is a much
-  larger tool than this one.
+- **The dollar rows count one machine, not a subscription.**
+  `~/.claude/projects/` on the computer the tool runs on is their entire input, so
+  they are a per-installation view of usage that is really billed per
+  subscription. Nothing warns you about the gap — invisible usage is
+  indistinguishable from no usage. Running the tool on each machine you use gives
+  each one its own honest local ledger, but does not add them up; there is
+  deliberately no shared store, because merging ledgers across machines means
+  reconciling clocks and de-duplicating sessions, which is a much larger tool than
+  this one. The limit rows are unaffected: they come from the account.
+- **The limit percentages are as fresh as your last `/usage`.** Claude Code
+  re-asks the server at session start and when you run `/usage`, and nothing the
+  panel does can trigger a refresh. So the figure is usually hours old. It is
+  shown anyway, marked `≥`, because usage within a window only grows and an old
+  percentage is a genuine floor — but it is a floor, not a reading, and the gap
+  between them is however much you have spent since.
 - **USD here is an API-equivalent, not an invoice** — on a seat. The dollar
   figures are then a consistent way to compare and weight usage, not a bill you
   will actually receive. The **billing** row says which case you are in, but it
@@ -648,24 +599,23 @@ your spend.
   be understated by half. Fast mode is not currently in use — every record in
   the transcripts reads `standard` — so this costs nothing today, but it would
   if that changed.
-- **The weekly row is a rolling 7 days**, not the fixed weekly window the
-  real subscription limit resets on. This reads slightly pessimistic:
-  the tool's week can include a leading tail of usage the real limit has
-  already reset past.
-- **The 5h block is reconstructed from Claude Code transcripts alone.** The real
-  limit pool is shared with Claude chat on claude.ai, and nothing on this machine
-  records that usage. A block opened by a message sent in the browser is
-  invisible here, so the panel would anchor the block on your first Claude Code
-  message instead and place the reset later than the real one. Comparing the
-  row's reset time against `/usage` is what catches this — on a calibrated row,
-  which is the only kind that shows one.
+- **The weekly *dollar* figure is a rolling 7 days**, not the fixed weekly window
+  the real limit resets on, so the tooltip's figure can include a leading tail of
+  spend the real limit has already reset past. The percentage on the row is not
+  affected — it comes from the server, which knows where its own week starts.
+- **The 5h *dollar* figure falls back to a guess when no account figure is
+  available.** Normally the server's reset time bounds it. Without one, the tool
+  anchors the block on the first Claude Code message it can see, which is later
+  than the real start whenever the block was opened elsewhere — another machine,
+  or Claude on claude.ai, which shares the same pool and writes nothing here. The
+  figure then covers too little.
 - **Server-side tool use is not counted.** Web search is billed per thousand
   searches rather than per token, and those counts (`usage.server_tool_use`)
   are ignored. They are zero across every transcript on the machine this was
   built for.
-- **`/usage` remains the authoritative source for limit state.** Everything
-  this tool shows for the 5h and week windows is an estimate calibrated
-  against your own reported spend, not a read of the real limit.
+- **`/usage` and the panel now agree by construction**, because they read the
+  same figures. When they disagree, the panel's are older — run `/usage` and they
+  will match again.
 
 ## Files
 
@@ -674,8 +624,10 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
 
 - `events.jsonl` — append-only ledger of priced messages, pruned to the
   trailing 8 days.
-- `state.json` — the numbers the widget actually reads and displays, plus the
-  `billing` mode the hook observed in its own session's environment.
+- `state.json` — the numbers the widget actually reads and displays: the dollar
+  figures, the account's limit rows under `limits` (with the age of the cache they
+  came from), and the `billing` mode the hook observed in its own session's
+  environment.
 - `offsets.json` — per-transcript file read positions, so re-running the
   scan never re-reads or double-counts a line.
 - `session_marks.json` — one bookmark per session recording the newest event
@@ -685,30 +637,29 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   last run" has to be remembered per session rather than inferred from which
   run happened to append the events. Bookmarks for sessions idle longer than
   the 8-day prune window are dropped.
-- `config.json` — calibrated ceilings (`ceiling_5h_usd`, `ceiling_7d_usd`),
-  the widget's last window position and size (`widget_position`,
-  `widget_scale`), and `autolaunch_paused` when sessions are not allowed to
-  open the panel.
+- `config.json` — the widget's last window position and size
+  (`widget_position`, `widget_scale`), and `autolaunch_paused` when sessions are
+  not allowed to open the panel.
 - `widget.lock` — held exclusively by the running panel for as long as it
   lives. This is how the launcher tells whether one is already up; the kernel
   drops it however the panel dies, including a hard kill.
 - `widget.pid` — the running panel's pid, so a stuck one can be found and
   killed. Diagnostic only: a pid cannot answer the liveness question honestly on
   Windows, which reuses the numbers.
-- `cost-meter.log` — where the `Stop` hook, the `SessionStart` hook and
-  `calibrate.py` record what they swallowed to keep your critical path
-  unbroken. The launcher also logs the boring outcomes (`launch: spawned`,
+- `cost-meter.log` — where the `Stop` hook and the `SessionStart` hook record
+  what they swallowed to keep your critical path unbroken. The launcher also logs
+  the boring outcomes (`launch: spawned`,
   `launch: already running`, `launch: paused`), because a hook that ran and
   decided to do nothing and a hook that never ran are otherwise
   indistinguishable.
 
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
-`~/.claude/projects/` from scratch. You lose your calibrated ceilings, the saved
-window position and size, and a paused auto-launch, nothing else — re-run calibration to
-get the percentages back. With the bookmarks gone too, the first turn after a reset
-reads as the whole session's cost, since there is no earlier mark to measure
-from; it corrects itself on the next turn.
+`~/.claude/projects/` from scratch. You lose the saved window position and size
+and a paused auto-launch, nothing else — the limit percentages are unaffected,
+since they live in Claude Code's own cache rather than here. With the bookmarks
+gone too, the first turn after a reset reads as the whole session's cost, since
+there is no earlier mark to measure from; it corrects itself on the next turn.
 
 ## Development
 
