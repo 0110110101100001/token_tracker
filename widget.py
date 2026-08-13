@@ -18,12 +18,28 @@ gi.require_version("Gtk", "3.0")
 # Gdk 4.0 is also installed here; without this the bare import picks 4.0 and
 # then collides with the Gtk 3.0 requirement above.
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+gi.require_version("Pango", "1.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from cost_meter import autolaunch, paths, roll, store, summary  # noqa: E402
 
 MARGIN = 24
 WIDTH = 240
+# Drag-to-resize. The panel scales as one piece — font, padding and width
+# together — rather than the frame alone: the content is five fixed rows, so a
+# wider window on its own would buy nothing but blank space around numbers that
+# stayed exactly as small. One number therefore drives everything, and it is
+# taken from the horizontal component of the drag. Height is never an input;
+# there are five rows and they are as tall as the font makes them.
+MIN_SCALE = 0.7
+MAX_SCALE = 3.0
+# The grab band around the window's perimeter, and how far along a side still
+# counts as that side's corner. Undecorated windows get no frame from anybody,
+# so this band is the whole handle; 6 px is what the pointer can find without
+# the band eating drags meant to move the panel. A 6 px corner square would be
+# too small to hit, hence the longer reach, as on any real window frame.
+EDGE = 6
+CORNER = 16
 AMBER_AT = 60
 RED_AT = 85
 # Colour classes for the two limit rows. Declared after `muted` in the CSS, so
@@ -47,16 +63,106 @@ WINDOW_KEYS = ("window_5h", "window_7d")
 ROLL_FRAME_MS = 16
 ROLL_MIN_DELTA = 0.01
 
+# The sizes at scale 1.0, which is the size the panel shipped with and the one
+# an unresized panel has to keep.
+FONT_PX = 11
+WARN_FONT_PX = 10
+BORDER = 10
+ROW_SPACING = 3
+COLUMN_SPACING = 12
+
+# Colours and the font family live here; the font *size* deliberately does not.
+# Reloading a CssProvider that is already on the screen updates what the style
+# context reports and re-lays out nothing: the label keeps the layout it built
+# at the old size, and `style-updated` never fires. A font-size rule here would
+# therefore set the startup size, silently ignore every resize after it, and
+# look for all the world like it was working. Pango attributes, applied per
+# label in `apply_scale`, do rebuild the layout.
 CSS = b"""
 window { background-color: #1e1e22; }
-label { color: #d8d8dc; font-family: monospace; font-size: 11px; }
+label { color: #d8d8dc; font-family: monospace; }
 label.value { font-weight: bold; }
 label.muted { color: #8a8a92; }
 label.green { color: #78d178; }
 label.amber { color: #e3b341; }
 label.red { color: #f06a5a; }
-label.warn { color: #f06a5a; font-size: 10px; }
+label.warn { color: #f06a5a; }
 """
+
+
+def font_px(scale):
+    return round(FONT_PX * scale)
+
+
+def warn_px(scale):
+    """The warning row's size, a footnote below the value rows at every scale.
+
+    Rounded from a smaller base rather than derived from `font_px`, so the gap
+    survives the smallest scale instead of rounding shut.
+    """
+    return round(WARN_FONT_PX * scale)
+
+
+def font_attrs(px):
+    """A Pango attribute list pinning text to `px` device pixels."""
+    attrs = Pango.AttrList()
+    attrs.insert(Pango.attr_size_new_absolute(px * Pango.SCALE))
+    return attrs
+
+
+def clamp_scale(scale):
+    return min(MAX_SCALE, max(MIN_SCALE, scale))
+
+
+def width_for_scale(scale):
+    return round(WIDTH * scale)
+
+
+def resize_zone(x, y, width, height):
+    """Which resize handle the pointer is over, or None for the panel's body.
+
+    None means the same drag moves the window instead, so the band has to stay
+    off the middle: a grab zone that swallowed an intended move would make the
+    panel feel stuck.
+
+    The top and bottom edges are deliberately not handles. Height follows the
+    content and the scale, so a vertical-only drag would have nothing to change,
+    and offering a resize cursor for a drag that does nothing is worse than
+    leaving it a move. The corners are handles because they carry a horizontal
+    component like any other.
+    """
+    west, east = x < EDGE, x >= width - EDGE
+    if not (west or east):
+        return None
+    side = "west" if west else "east"
+    if y < CORNER:
+        return f"north_{side}"
+    if y >= height - CORNER:
+        return f"south_{side}"
+    return side
+
+
+def drag_scale(zone, start_scale, dx):
+    """The scale a horizontal drag of `dx` pixels arrives at.
+
+    Outwards grows the panel on either side, so a drag on a west handle counts
+    the opposite direction. `WIDTH` is the divisor because it is what scale 1.0
+    measures: dragging a full panel width doubles the panel.
+    """
+    outwards = -dx if zone.endswith("west") else dx
+    return clamp_scale(start_scale + outwards / WIDTH)
+
+
+def drag_origin(zone, start_x, start_width, width):
+    """Where the window has to start so the un-grabbed edge stays put.
+
+    Grab the left edge and the right one should not move; that means shifting
+    the window by whatever the width gained. An east handle keeps the origin,
+    which is where the window already grows from.
+    """
+    if zone.endswith("west"):
+        return start_x + start_width - width
+    return start_x
 
 
 def _fmt_usd(value):
@@ -118,13 +224,39 @@ def window_row(window):
             "red" if pct >= RED_AT else "amber" if pct >= AMBER_AT else "green")
 
 
-def _row(grid, index, caption):
+def billing_text(billing):
+    """The `billing` row: what this session is paying with, or a dash.
+
+    A dash covers both the case where nothing could be established and a
+    state.json written before this row existed — and it stays a dash, because
+    the mode is not in the transcripts and so cannot be filled in afterwards.
+    Guessing either way would misrepresent every row above: the same dollar
+    figure is a notional number on a seat and a bill on API billing.
+
+    With a mode but no label, the mode alone goes on the row. A login that names
+    neither a subscription nor a tier still tells you the useful half.
+    """
+    billing = billing or {}
+    mode = billing.get("mode")
+    if not mode or mode == "unknown":
+        return "—"
+    return billing.get("label") or mode
+
+
+def _row(grid, index, caption, labels):
+    """Build one caption/value pair, and register both for scaling.
+
+    Both halves go into `labels` because the whole row has to grow together;
+    the caller only ever needs the value label back, which is the one that gets
+    rewritten.
+    """
     left = Gtk.Label(label=caption, xalign=0.0)
     right = Gtk.Label(label="—", xalign=1.0)
     right.get_style_context().add_class("value")
     right.set_hexpand(True)
     grid.attach(left, 0, index, 1, 1)
     grid.attach(right, 1, index, 1, 1)
+    labels.extend((left, right))
     return right
 
 
@@ -149,11 +281,29 @@ class CostMeter(Gtk.Window):
         # Still asked for, because they are what X11 acts on.
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
-        self.set_resizable(False)
-        self.set_default_size(WIDTH, -1)
-        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        # Resizable because `resize()` is how a scale change is applied, and
+        # set_resizable(False) pins the geometry hints to the natural size and
+        # makes that call a no-op. Nothing else about the window changes: the
+        # size still comes from the scale, never from the window manager.
+        self.set_resizable(True)
+        self.scale = self.saved_scale()
+        self.set_default_size(width_for_scale(self.scale), -1)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
+                        | Gdk.EventMask.BUTTON_RELEASE_MASK
+                        | Gdk.EventMask.POINTER_MOTION_MASK)
         self.connect("button-press-event", self.on_click)
+        self.connect("button-release-event", self.on_release)
+        self.connect("motion-notify-event", self.on_motion)
         self.connect("destroy", Gtk.main_quit)
+
+        # The resize drag in progress, or None. Held ourselves rather than
+        # handed to begin_resize_drag: the window manager would stretch the
+        # height for the length of the drag and we would take it back on every
+        # frame, which reads as the panel shuddering. `_cursor_name` is the
+        # shape currently set, so a pointer crossing the band sets it once
+        # instead of on every motion event.
+        self._resize = None
+        self._cursor_name = None
 
         # Position bookkeeping. user_positioned means the user chose a spot, so
         # automatic re-anchoring must stop; _anchor is the last position we set
@@ -172,19 +322,31 @@ class CostMeter(Gtk.Window):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
 
-        grid = Gtk.Grid(row_spacing=3, column_spacing=12)
-        grid.set_border_width(10)
+        grid = Gtk.Grid()
+        self.grid = grid
         self.add(grid)
 
-        self.last_turn = _row(grid, 0, "last turn")
-        self.session = _row(grid, 1, "session")
-        self.today = _row(grid, 2, "today")
+        # Every label the scale has to reach. Collected as the rows are built,
+        # because a caption that stayed 11 px while its value grew would look
+        # like a rendering fault rather than a missing line of code.
+        self.labels = []
+        self.last_turn = _row(grid, 0, "last turn", self.labels)
+        self.session = _row(grid, 1, "session", self.labels)
+        self.today = _row(grid, 2, "today", self.labels)
         grid.attach(Gtk.Separator(), 0, 3, 2, 1)
-        self.window_5h = _row(grid, 4, "5h window")
-        self.window_7d = _row(grid, 5, "week")
+        self.window_5h = _row(grid, 4, "5h window", self.labels)
+        self.window_7d = _row(grid, 5, "week", self.labels)
+        # Below a separator of its own: everything above is a measured figure,
+        # and this is the fact that says what those figures mean — money owed on
+        # API billing, notional against a seat.
+        grid.attach(Gtk.Separator(), 0, 6, 2, 1)
+        self.billing = _row(grid, 7, "billing", self.labels)
         # Split because `muted` has two owners: staleness for all five rows, and
-        # draw_row for the two window rows when there is no calibration.
-        self.usd_values = (self.last_turn, self.session, self.today)
+        # draw_row for the two window rows when there is no calibration. The
+        # billing row rides with the plain ones — it is drawn once from
+        # state.json and only staleness ever mutes it.
+        self.usd_values = (self.last_turn, self.session, self.today,
+                           self.billing)
         self.window_values = (self.window_5h, self.window_7d)
         self.rows = {"last_turn": self.last_turn,
                      "session": self.session, "today": self.today,
@@ -211,12 +373,114 @@ class CostMeter(Gtk.Window):
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
         self.warning.set_no_show_all(True)
-        grid.attach(self.warning, 0, 6, 2, 1)
+        grid.attach(self.warning, 0, 8, 2, 1)
+
+        # After every label exists, since this is what sizes them.
+        self.apply_scale(self.scale)
 
         self.watch()
         self.refresh()  # before place(), so the first anchor sees real content
         self.place()
         GLib.timeout_add_seconds(STALE_POLL_SECONDS, self.refresh)
+
+    @staticmethod
+    def saved_scale():
+        """The scale the panel was left at, or 1.0.
+
+        Clamped and type-checked on the way in: config.json is a file a user can
+        edit, and a hand-typed `"widget_scale": 40` would open a panel larger
+        than the screen with its own resize handles off the edge — unreachable,
+        and only fixable by editing the file back.
+        """
+        config = store.read_json(paths.config_path(), default={}) or {}
+        try:
+            return clamp_scale(float(config.get("widget_scale") or 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def apply_scale(self, scale):
+        """Resize the whole panel to `scale`: text, spacings and window.
+
+        Text goes through Pango attributes rather than the stylesheet, for the
+        reason recorded above `CSS` — a reloaded provider restyles nothing that
+        already exists.
+
+        The height is asked for as 1 rather than computed: GTK clamps a request
+        up to the natural size, so the rows decide the height and this only ever
+        sets the width. Computing it here would mean knowing the new font
+        metrics before the attributes that produce them have been applied.
+        """
+        self.scale = clamp_scale(scale)
+        attrs = font_attrs(font_px(self.scale))
+        for label in self.labels:
+            label.set_attributes(attrs)
+        self.warning.set_attributes(font_attrs(warn_px(self.scale)))
+        self.grid.set_border_width(round(BORDER * self.scale))
+        self.grid.set_row_spacing(round(ROW_SPACING * self.scale))
+        self.grid.set_column_spacing(round(COLUMN_SPACING * self.scale))
+        self.resize(width_for_scale(self.scale), 1)
+
+    def remember_scale(self):
+        self.update_config(lambda c: c.__setitem__("widget_scale", self.scale))
+
+    def reset_scale(self):
+        self.update_config(lambda c: c.pop("widget_scale", None))
+        self.apply_scale(1.0)
+
+    def set_resize_cursor(self, zone):
+        """Show the handle under the pointer, or hand the cursor back.
+
+        The window is undecorated, so this shape is the only thing that says a
+        resize handle is there at all. Set only on a change: GDK takes a cursor
+        per call and motion events arrive by the dozen.
+        """
+        name = {"west": "ew-resize", "east": "ew-resize",
+                "north_west": "nwse-resize", "south_east": "nwse-resize",
+                "north_east": "nesw-resize", "south_west": "nesw-resize",
+                }.get(zone)
+        if name == self._cursor_name:
+            return
+        self._cursor_name = name
+        window = self.get_window()
+        if window is None:
+            return  # not realized yet; the next motion event sets it
+        window.set_cursor(
+            None if name is None
+            else Gdk.Cursor.new_from_name(self.get_display(), name))
+
+    def on_motion(self, _widget, event):
+        if self._resize is None:
+            self.set_resize_cursor(
+                resize_zone(event.x, event.y, *self.get_size()))
+            return False
+        start = self._resize
+        scale = drag_scale(start["zone"], start["scale"],
+                           event.x_root - start["x"])
+        if scale != self.scale:
+            self.apply_scale(scale)
+            self.move_for_drag(start)
+        return True
+
+    def move_for_drag(self, start):
+        """Keep the edge the user is not holding where they left it.
+
+        Only when the user has placed the panel themselves. While it is anchored
+        the corner owns the position: on_size_allocate re-anchors on every scale
+        change, so moving here would be overruled a moment later anyway, and the
+        right edge already stays put because that is the edge in the corner.
+        """
+        if not self.user_positioned:
+            return
+        self.move(drag_origin(start["zone"], start["x_window"],
+                              start["width"], width_for_scale(self.scale)),
+                  self.get_position()[1])
+
+    def on_release(self, _widget, _event):
+        if self._resize is None:
+            return False
+        self._resize = None
+        self.remember_scale()
+        return True
 
     def place(self):
         config = store.read_json(paths.config_path(), default={}) or {}
@@ -335,6 +599,9 @@ class CostMeter(Gtk.Window):
             rolling = False
         for key in ROLL_KEYS:
             self.draw_row(key)
+        # Not a rolling row: it is a fact, not a quantity, and there is nothing
+        # between `team · max 5x` and `API` to animate through.
+        self.billing.set_text(billing_text(state.get("billing")))
         if rolling:
             self.start_roll()
 
@@ -440,6 +707,17 @@ class CostMeter(Gtk.Window):
 
     def on_click(self, _widget, event):
         if event.button == 1:
+            zone = resize_zone(event.x, event.y, *self.get_size())
+            if zone is not None:
+                # Everything the drag is measured against, sampled once here:
+                # read per motion event instead, each frame would be measured
+                # against the size the previous frame had just produced and the
+                # panel would run away from the pointer.
+                self._resize = {"zone": zone, "x": event.x_root,
+                                "scale": self.scale,
+                                "x_window": self.get_position()[0],
+                                "width": self.get_size().width}
+                return True
             self.begin_move_drag(event.button, int(event.x_root),
                                  int(event.y_root), event.time)
             return True  # on_configure persists wherever the drag ends up
@@ -482,6 +760,7 @@ class CostMeter(Gtk.Window):
         for caption, handler in (
             ("Refresh now", lambda *_: self.refresh()),
             ("Reset position", lambda *_: self.reset_position()),
+            ("Reset size", lambda *_: self.reset_scale()),
             ("Resume auto-launch" if paused else "Pause auto-launch",
              lambda *_: self.set_autolaunch_paused(not paused)),
             ("Quit", lambda *_: Gtk.main_quit()),
@@ -529,9 +808,13 @@ def selftest(output):
     window = CostMeter()
     content = window.get_child()
     window.remove(content)
+    # Whatever the saved scale is, not WIDTH: a panel the user has resized
+    # renders at its own size, and measuring it against the unscaled width
+    # would call a correct frame too small.
+    width = width_for_scale(window.scale)
 
     offscreen = Gtk.OffscreenWindow()
-    offscreen.set_size_request(WIDTH, -1)
+    offscreen.set_size_request(width, -1)
     offscreen.add(content)
     offscreen.show_all()
     while Gtk.events_pending():
@@ -542,7 +825,7 @@ def selftest(output):
         print("selftest failed: offscreen render produced no pixbuf",
               file=sys.stderr)
         return 1
-    if pixbuf.get_width() < WIDTH or pixbuf.get_height() < 40:
+    if pixbuf.get_width() < width or pixbuf.get_height() < 40:
         print(f"selftest failed: frame too small "
               f"({pixbuf.get_width()}x{pixbuf.get_height()})", file=sys.stderr)
         return 1

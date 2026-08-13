@@ -199,7 +199,7 @@ looks wrong, is under [Known limitations](#known-limitations).
 ## What it is
 
 The panel is a small borderless window anchored to the bottom-right corner of
-your screen. It shows six rows:
+your screen. It shows seven rows:
 
 - **last turn** — USD cost of the assistant turn that just finished
 - **session** — USD cost of the current Claude Code session
@@ -210,6 +210,9 @@ your screen. It shows six rows:
   clock time that block resets
 - **week** — the same for the trailing 7 days, with no reset time (the weekly
   cap has no block boundary this tool can locate)
+- *(separator)*
+- **billing** — how this session is paying: `team · max 5x` for a seat, `API`
+  when it is billed per token, `—` when neither could be established
 
 The 5-hour limit is a **fixed block, not a trailing five hours**. A block opens
 on the first message you send after the previous one expired and runs five hours
@@ -236,7 +239,7 @@ percentage is only ever an estimate against a ceiling you derived yourself, and
 `~` is what marks it as one. Only the percentage carries the green/amber/red
 colour.
 
-A seventh row appears only when needed. It carries two kinds of warning:
+One more row appears only when needed. It carries two kinds of warning:
 
 - `! stale 1 h 37 min` — `state.json` has not been rewritten for over ten
   minutes, so the figures above it are that old. Every value row is greyed
@@ -252,6 +255,38 @@ A seventh row appears only when needed. It carries two kinds of warning:
 Cost is computed from the same token counts Claude Code already writes to
 its own transcript files under `~/.claude/projects/`; the tool reads those,
 prices each assistant message, and keeps a rolling ledger of the result.
+
+### The billing row
+
+Every figure above this row is a dollar amount whose meaning depends on it. On a
+seat they are notional — a measure of what you used, not of what you owe. On API
+billing they are a bill. The row is there so the two are never confused.
+
+It is decided in this order, first match winning:
+
+1. `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in the session's environment,
+   `apiKeyHelper` in `~/.claude/settings.json`, or `CLAUDE_CODE_USE_BEDROCK` /
+   `CLAUDE_CODE_USE_VERTEX` → **API**. An exported key is what Claude Code
+   prefers over the login it has on disk, so a machine that is signed in
+   perfectly well can still be spending per token.
+2. A `claudeAiOauth` block in `~/.claude/.credentials.json` → the seat, labelled
+   with its `subscriptionType` and `rateLimitTier` (`default_claude_max_5x`
+   becomes `max 5x`).
+3. Neither → `—`. A guessed billing mode would misrepresent every row above it,
+   so the panel says nothing instead.
+
+Only the presence of a credential is ever read, never its value.
+
+**This is not in the transcripts.** `usage.service_tier` is the field that looks
+like it should carry it and does not — it reads `standard` whichever way the
+account is billed, because it names the API's latency tier. So the mode is read
+from the environment by the `Stop` hook, which is the only thing that runs
+*inside* the session it is reporting on: a key exported for one session is
+visible there and in no other process. Two consequences follow. Turns priced
+before this row existed carry no mode and cannot be given one after the fact, so
+an old `state.json` reads `—` until the next turn. And with several sessions
+running under different credentials, the row describes whichever wrote last —
+the same rule the **session** row already follows.
 
 ### Rolling figures
 
@@ -295,6 +330,26 @@ Only genuinely new work animates, so the 60-second staleness poll re-reading the
 same `state.json` does not re-run the animation, and a move smaller than a cent
 is set outright. Nothing about the row's size changes, only the value — a
 changing row height would re-anchor the whole panel on every turn.
+
+### Moving and resizing it
+
+Drag the **middle** of the panel to move it. Drag its **left or right edge, or
+any corner**, to resize it: the pointer turns into a resize arrow over the 6-pixel
+band around the perimeter. Both are saved, and both have their own entry in the
+right-click menu — **Reset position** puts the panel back in the bottom-right
+corner, **Reset size** puts it back to its original size. The two are separate
+because undoing one is rarely a reason to undo the other.
+
+Resizing scales the whole panel — text, padding and width together — rather than
+just stretching the frame. The content is five fixed rows, so a wider window on
+its own would only add blank space around numbers that stayed exactly as small.
+The range runs from 0.7× to 3×; a drag that would go past either end stops there.
+
+Only the horizontal part of a drag counts, which is why the top and bottom edges
+are not handles. Height is a consequence of the scale, not an input: there are
+five rows and they are as tall as the font makes them. While the panel is still
+anchored in the corner it also grows leftwards whichever edge you pull, since the
+corner is what owns its position until you move it yourself.
 
 ## What the graphical session has to provide
 
@@ -574,10 +629,18 @@ your spend.
   them up; there is deliberately no shared store, because merging ledgers across
   machines means reconciling clocks and de-duplicating sessions, which is a much
   larger tool than this one.
-- **USD here is an API-equivalent, not an invoice.** The account this tool
-  was built for is on a subscription, not pay-per-token API billing — the
-  dollar figures are a consistent way to compare and weight usage, not a
-  bill you will actually receive.
+- **USD here is an API-equivalent, not an invoice** — on a seat. The dollar
+  figures are then a consistent way to compare and weight usage, not a bill you
+  will actually receive. The **billing** row says which case you are in, but it
+  reports only the mode: on API billing the figures are the right *kind* of
+  number, and still not an invoice, since they come from published rates rather
+  than from Anthropic's meter.
+- **The billing row cannot be backfilled and describes the last writer.** The
+  mode is not in the transcripts — `usage.service_tier` names the API's latency
+  tier and reads `standard` either way — so it is observed by the `Stop` hook in
+  its own session's environment. Turns priced before the row existed carry no
+  mode and never will, and with several sessions running under different
+  credentials the row describes whichever wrote most recently.
 - **Fast mode is priced as though it were standard.** The transcripts do record
   which speed served each message, in `usage.speed`, but nothing here reads that
   field and `pricing.json` carries no fast-mode rates. Since Opus 5 fast mode
@@ -611,7 +674,8 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
 
 - `events.jsonl` — append-only ledger of priced messages, pruned to the
   trailing 8 days.
-- `state.json` — the numbers the widget actually reads and displays.
+- `state.json` — the numbers the widget actually reads and displays, plus the
+  `billing` mode the hook observed in its own session's environment.
 - `offsets.json` — per-transcript file read positions, so re-running the
   scan never re-reads or double-counts a line.
 - `session_marks.json` — one bookmark per session recording the newest event
@@ -622,8 +686,9 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   run happened to append the events. Bookmarks for sessions idle longer than
   the 8-day prune window are dropped.
 - `config.json` — calibrated ceilings (`ceiling_5h_usd`, `ceiling_7d_usd`),
-  the widget's last window position, and `autolaunch_paused` when sessions are
-  not allowed to open the panel.
+  the widget's last window position and size (`widget_position`,
+  `widget_scale`), and `autolaunch_paused` when sessions are not allowed to
+  open the panel.
 - `widget.lock` — held exclusively by the running panel for as long as it
   lives. This is how the launcher tells whether one is already up; the kernel
   drops it however the panel dies, including a hard kill.
@@ -640,7 +705,7 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
 `~/.claude/projects/` from scratch. You lose your calibrated ceilings, the saved
-window position and a paused auto-launch, nothing else — re-run calibration to
+window position and size, and a paused auto-launch, nothing else — re-run calibration to
 get the percentages back. With the bookmarks gone too, the first turn after a reset
 reads as the whole session's cost, since there is no earlier mark to measure
 from; it corrects itself on the next turn.

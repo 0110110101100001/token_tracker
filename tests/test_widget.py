@@ -18,6 +18,7 @@ selftest in smoke.py, where a headless box has no taskbar to be in either.
 
 import ctypes
 import os
+import time
 import unittest
 from datetime import datetime
 
@@ -284,6 +285,337 @@ class RollStyleTest(unittest.TestCase):
         rolling.retarget({"today": 10.0})
         rolling.retarget({"today": 48.0})
         self.assertEqual(rolling.frame(0.5)["today"], roll.value_at(10.0, 48.0, 0.5))
+
+
+class ScaleSizeTest(unittest.TestCase):
+    """One number sizes the whole panel.
+
+    The panel is five fixed rows, so widening the frame on its own would buy
+    nothing but blank space around numbers that stayed exactly as small. Scale
+    1.0 has to reproduce the sizes the panel shipped with, or upgrading would
+    silently resize a panel nobody asked to resize.
+    """
+
+    def test_scale_one_is_the_size_the_panel_has_always_been(self):
+        self.assertEqual(widget.font_px(1.0), 11)
+        self.assertEqual(widget.warn_px(1.0), 10)
+        self.assertEqual(widget.width_for_scale(1.0), widget.WIDTH)
+
+    def test_every_size_follows_the_scale(self):
+        self.assertEqual(widget.font_px(2.0), 22)
+        self.assertEqual(widget.warn_px(2.0), 20)
+        self.assertEqual(widget.width_for_scale(2.0), widget.WIDTH * 2)
+
+    def test_the_warning_row_stays_smaller_than_the_value_rows(self):
+        # It is a footnote and has to keep reading as one. At the smallest scale
+        # the two sizes are close enough that careless rounding closes the gap.
+        for scale in (widget.MIN_SCALE, 1.0, widget.MAX_SCALE):
+            self.assertLess(widget.warn_px(scale), widget.font_px(scale),
+                            f"at scale {scale}")
+
+    def test_the_stylesheet_names_no_font_size(self):
+        """Font sizes must not come from the CSS, however natural that looks.
+
+        Reloading a CssProvider already on the screen re-lays out nothing: the
+        style context reports the new size, `style-updated` never fires, and
+        every existing label keeps the layout it built at the old one. A
+        font-size rule here would set the size at startup, ignore every resize
+        after it, and look convincingly like it worked.
+        """
+        self.assertNotIn("font-size", widget.CSS.decode("utf-8"))
+
+
+class ResizeZoneTest(unittest.TestCase):
+    """Which part of an undecorated window is a resize handle.
+
+    There is no frame drawn by anybody, so this band is the only handle the
+    panel has. It has to stay off the middle, where the same button drag moves
+    the window: a grab zone that swallowed an intended move would make the panel
+    feel stuck.
+    """
+
+    # A panel roughly the shape of the real one.
+    SIZE = (240, 120)
+
+    def zone(self, x, y):
+        return widget.resize_zone(x, y, *self.SIZE)
+
+    def test_the_body_of_the_panel_is_not_a_handle(self):
+        self.assertIsNone(self.zone(120, 60))
+
+    def test_the_side_edges_are_handles(self):
+        self.assertEqual(self.zone(1, 60), "west")
+        self.assertEqual(self.zone(238, 60), "east")
+
+    def test_the_corners_are_handles_too(self):
+        self.assertEqual(self.zone(1, 1), "north_west")
+        self.assertEqual(self.zone(238, 1), "north_east")
+        self.assertEqual(self.zone(1, 118), "south_west")
+        self.assertEqual(self.zone(238, 118), "south_east")
+
+    def test_a_corner_reaches_further_along_the_side_than_the_edge_is_wide(self):
+        # A 6 px square is too small to hit. The corner claims a longer stretch
+        # of the side, which is what every real window frame does.
+        self.assertEqual(self.zone(1, 12), "north_west")
+
+    def test_a_bare_top_or_bottom_edge_is_not_a_handle(self):
+        # Height is a consequence of the content and the scale, never an input:
+        # there are five rows and they are as tall as the font. A vertical-only
+        # grab would have nothing to change, so it stays a move.
+        self.assertIsNone(self.zone(120, 1))
+        self.assertIsNone(self.zone(120, 119))
+
+
+class ResizeDragTest(unittest.TestCase):
+    """What a drag of so many pixels does to the scale and to the window's x.
+
+    Pure arithmetic, deliberately: the pointer grab and the CSS reload around it
+    need a display, and none of the decisions that can be wrong do.
+    """
+
+    def test_dragging_the_right_edge_outwards_grows_the_panel(self):
+        self.assertEqual(widget.drag_scale("east", 1.0, widget.WIDTH), 2.0)
+
+    def test_dragging_the_left_edge_outwards_grows_it_by_the_same_amount(self):
+        # Outwards is leftwards on that side, so the sign of dx flips.
+        self.assertEqual(widget.drag_scale("west", 1.0, -widget.WIDTH), 2.0)
+        self.assertEqual(widget.drag_scale("north_west", 1.0, -widget.WIDTH), 2.0)
+
+    def test_dragging_inwards_shrinks_it(self):
+        self.assertEqual(widget.drag_scale("east", 2.0, -widget.WIDTH), 1.0)
+
+    def test_a_runaway_drag_stops_at_the_limits(self):
+        self.assertEqual(widget.drag_scale("east", 1.0, 100_000), widget.MAX_SCALE)
+        self.assertEqual(widget.drag_scale("east", 1.0, -100_000), widget.MIN_SCALE)
+
+    def test_dragging_the_left_edge_leaves_the_right_edge_where_it_was(self):
+        # Grabbed at x=100 with a 240 px window, so the right edge is at 340 and
+        # a 300 px window has to start at 40 to keep it there.
+        self.assertEqual(widget.drag_origin("west", 100, 240, 300), 40)
+
+    def test_dragging_the_right_edge_leaves_the_left_edge_where_it_was(self):
+        self.assertEqual(widget.drag_origin("east", 100, 240, 300), 100)
+
+
+class BillingRowTest(unittest.TestCase):
+    """The row that says which of the panel's figures are money you owe.
+
+    Everything above it is a dollar amount whose meaning depends on this: on a
+    seat they are notional, and on API billing they are a bill. That is why an
+    unanswered question shows as a dash rather than defaulting to either one --
+    guessing here would misrepresent every other row on the panel.
+    """
+
+    def test_a_seat_names_its_plan(self):
+        self.assertEqual(
+            widget.billing_text({"mode": "seat", "label": "team · max 5x"}),
+            "team · max 5x")
+
+    def test_api_billing_says_so(self):
+        self.assertEqual(widget.billing_text({"mode": "api", "label": "API"}),
+                         "API")
+
+    def test_an_unknown_mode_is_a_dash(self):
+        self.assertEqual(widget.billing_text({"mode": "unknown", "label": None}),
+                         "—")
+
+    def test_a_state_written_before_this_existed_is_a_dash(self):
+        # Older state.json files carry no billing key at all, and the mode is
+        # not in the transcripts, so it cannot be filled in after the fact.
+        self.assertEqual(widget.billing_text(None), "—")
+        self.assertEqual(widget.billing_text({}), "—")
+
+    def test_a_mode_with_no_label_still_says_which_mode(self):
+        # A login naming neither a subscription nor a tier: the plan is unknown
+        # but the seat is not, and "seat" is the more useful half.
+        self.assertEqual(widget.billing_text({"mode": "seat", "label": None}),
+                         "seat")
+
+
+class StubEvent:
+    """The handful of fields the press and motion handlers actually read.
+
+    A real Gdk.EventButton cannot be built from Python without a display and a
+    window to aim it at, and none of what is under test here needs one: the
+    handlers read coordinates and hand them to arithmetic that is already
+    covered above. What this pins down is the wiring between the two.
+    """
+
+    def __init__(self, button=1, x=0, y=0, x_root=0):
+        self.button = button
+        self.x = x
+        self.y = y
+        self.x_root = x_root
+        self.time = 0
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class ResizeWiringTest(unittest.TestCase):
+    """Pressing an edge starts a resize, and moving from there rescales.
+
+    Both halves are short enough to look obviously right and fail silently: a
+    press that fell through to begin_move_drag would leave the panel unresizable
+    while every arithmetic test above stayed green.
+    """
+
+    def setUp(self):
+        self.window = widget.CostMeter()
+        self.window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(self.window.destroy)
+        self.addCleanup(self.window.update_config,
+                        lambda c: c.pop("widget_scale", None))
+        self.window.apply_scale(1.0)
+        self.width = self.window.get_size().width
+
+    def press_edge(self):
+        # The right edge, at a height clear of both corners.
+        self.window.on_click(None, StubEvent(x=self.width - 1, y=50,
+                                             x_root=500))
+
+    def test_pressing_an_edge_starts_a_resize(self):
+        self.press_edge()
+        self.assertIsNotNone(self.window._resize)
+
+    def test_moving_after_that_press_rescales_the_panel(self):
+        self.press_edge()
+        self.window.on_motion(None, StubEvent(x_root=500 + widget.WIDTH // 2))
+        self.assertAlmostEqual(self.window.scale, 1.5)
+
+    def test_releasing_ends_the_drag_and_saves_the_size(self):
+        self.press_edge()
+        self.window.on_motion(None, StubEvent(x_root=500 + widget.WIDTH // 2))
+        self.window.on_release(None, StubEvent())
+        self.assertIsNone(self.window._resize)
+        config = store.read_json(paths.config_path(), default={}) or {}
+        self.assertAlmostEqual(config.get("widget_scale"), 1.5)
+
+    def test_a_move_with_no_drag_in_progress_leaves_the_scale_alone(self):
+        # Plain pointer motion across the panel only updates the cursor.
+        self.window.on_motion(None, StubEvent(x=self.width // 2, y=50,
+                                              x_root=900))
+        self.assertEqual(self.window.scale, 1.0)
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class BillingRowOnThePanelTest(unittest.TestCase):
+    """The row is built, filled from state.json, and greys out with the rest.
+
+    Muted alongside the figures because it comes from the same snapshot: if the
+    hook has been dead for a day, the billing mode it recorded is exactly as old
+    as the dollar amounts above it, and a confident-looking `team · max 5x`
+    beside five greyed-out rows would claim a freshness it does not have.
+    """
+
+    def setUp(self):
+        self.window = widget.CostMeter()
+        self.window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(self.window.destroy)
+
+    def state(self, **extra):
+        return {"updated_at": datetime.now().astimezone().isoformat(),
+                "last_turn_usd": 0.0,
+                "session": {"id": "s1", "usd": 1.0},
+                "today_usd": 1.0,
+                "window_5h": {"usd": 1.0, "pct": None},
+                "window_7d": {"usd": 1.0, "pct": None},
+                "unknown_models": [], **extra}
+
+    def draw(self, state):
+        store.write_json_atomic(paths.state_path(), state)
+        self.window.refresh()
+
+    def test_the_row_shows_what_the_state_recorded(self):
+        self.draw(self.state(billing={"mode": "seat", "label": "team · max 5x"}))
+        self.assertEqual(self.window.billing.get_text(), "team · max 5x")
+
+    def test_a_state_with_no_billing_key_leaves_a_dash(self):
+        self.draw(self.state())
+        self.assertEqual(self.window.billing.get_text(), "—")
+
+    def test_the_row_greys_out_when_the_figures_go_stale(self):
+        old = datetime.fromtimestamp(time.time() - 86400).astimezone().isoformat()
+        self.draw(self.state(updated_at=old,
+                             billing={"mode": "api", "label": "API"}))
+        self.assertTrue(
+            self.window.billing.get_style_context().has_class("muted"))
+
+    def test_a_fresh_row_is_not_greyed_out(self):
+        self.draw(self.state(billing={"mode": "api", "label": "API"}))
+        self.assertFalse(
+            self.window.billing.get_style_context().has_class("muted"))
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class ScaleMemoryTest(unittest.TestCase):
+    """A resized panel opens at the size it was left at.
+
+    The scale shares config.json with the ceilings and the window position, so
+    it goes through the same locked read-modify-write those do; a panel that
+    forgot its size on every restart would make the whole feature pointless.
+    """
+
+    def setUp(self):
+        self.window = widget.CostMeter()
+        self.window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(self.window.destroy)
+        self.addCleanup(self.window.update_config,
+                        lambda c: c.pop("widget_scale", None))
+
+    def test_a_saved_scale_is_what_the_next_panel_opens_at(self):
+        self.window.apply_scale(1.8)
+        self.window.remember_scale()
+
+        reopened = widget.CostMeter()
+        reopened.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(reopened.destroy)
+        self.assertEqual(reopened.scale, 1.8)
+
+    def test_resetting_the_size_leaves_no_key_behind(self):
+        self.window.apply_scale(1.8)
+        self.window.remember_scale()
+        self.window.reset_scale()
+        config = store.read_json(paths.config_path(), default={}) or {}
+        self.assertNotIn("widget_scale", config)
+        self.assertEqual(self.window.scale, 1.0)
+
+    def test_the_rows_themselves_grow_with_the_scale(self):
+        """The stylesheet reaches the real widgets, not just a string.
+
+        Every other scale test reads the CSS text, which stays green if the
+        provider is never reloaded or the grid keeps its old spacings -- the
+        panel would then stay exactly the size it was while `scale` claimed
+        otherwise. The natural width of the built widget tree is what actually
+        answers that, so it is measured here and nowhere else.
+        """
+        before = self.natural_width_at(1.0)
+        after = self.natural_width_at(2.0)
+        self.assertGreater(after, before * 1.5,
+                           f"rows did not grow: {before} -> {after}")
+
+    def natural_width_at(self, scale):
+        """How wide the built widget tree wants to be at `scale`.
+
+        The grid rather than the window, and shown first: GTK reports zero for
+        an invisible widget and a placeholder for a toplevel whose children are
+        all invisible, so an unshown tree answers the same number at every scale
+        and the measurement proves nothing. show_all() on the grid makes the
+        rows measurable without mapping a window onto the user's screen.
+        """
+        self.window.grid.show_all()
+        self.window.apply_scale(scale)
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
+        return self.window.grid.get_preferred_width().natural_width
+
+    def test_saving_a_scale_leaves_the_window_position_alone(self):
+        self.window.update_config(
+            lambda c: c.__setitem__("widget_position", [7, 9]))
+        self.addCleanup(self.window.update_config,
+                        lambda c: c.pop("widget_position", None))
+        self.window.apply_scale(1.5)
+        self.window.remember_scale()
+        config = store.read_json(paths.config_path(), default={}) or {}
+        self.assertEqual(config.get("widget_position"), [7, 9])
 
 
 if __name__ == "__main__":

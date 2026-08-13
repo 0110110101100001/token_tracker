@@ -9,6 +9,12 @@ COST_METER_TRANSCRIPTS is redirected as well. A test that reaches a front end's
 main() reaches tally.refresh, which scans the transcript root; left at its
 default that is the user's real ~/.claude/projects, and the test would read live
 data and take as long as the real ledger is large.
+
+COST_METER_CLAUDE_HOME for the same reason and one more: tally.refresh also asks
+how the session is being billed, which reads ~/.claude/.credentials.json. A test
+must not go near the real one -- it holds live OAuth tokens, and a test that
+depended on it would pass or fail according to how the machine happens to be
+logged in.
 """
 
 import os
@@ -22,9 +28,12 @@ class TempHome(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.transcripts = os.path.join(self.tmp, "transcripts")
+        self.claude_home = os.path.join(self.tmp, "claude")
         os.makedirs(self.transcripts)
+        os.makedirs(self.claude_home)
         for name, value in (("COST_METER_HOME", self.tmp),
-                            ("COST_METER_TRANSCRIPTS", self.transcripts)):
+                            ("COST_METER_TRANSCRIPTS", self.transcripts),
+                            ("COST_METER_CLAUDE_HOME", self.claude_home)):
             self.addCleanup(self._restore, name, os.environ.get(name))
             os.environ[name] = value
 

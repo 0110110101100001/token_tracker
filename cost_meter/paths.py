@@ -68,3 +68,24 @@ def pricing_path():
 def transcripts_root():
     override = os.environ.get("COST_METER_TRANSCRIPTS")
     return Path(override) if override else Path.home() / ".claude" / "projects"
+
+
+def claude_home():
+    """Claude Code's own directory — not this tool's.
+
+    Overridable on its own rather than derived from transcripts_root(): that one
+    points at a tree of transcripts and is redirected in tests to a directory
+    holding nothing else, while this one is read for credentials and settings.
+    Tying them together would mean a test that wanted one would silently get
+    the other.
+    """
+    override = os.environ.get("COST_METER_CLAUDE_HOME")
+    return Path(override) if override else Path.home() / ".claude"
+
+
+def credentials_path():
+    return claude_home() / ".credentials.json"
+
+
+def claude_settings_path():
+    return claude_home() / "settings.json"

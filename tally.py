@@ -10,7 +10,7 @@ import sys
 import time
 import traceback
 
-from cost_meter import paths, store
+from cost_meter import billing, paths, store
 from cost_meter.log import write as _log
 from cost_meter.parser import scan
 from cost_meter.pricing import load_pricing
@@ -70,6 +70,12 @@ def refresh(session_id, now=None):
     turn_ids, mark = new_turn_ids(events, session_id, marks.get(session_id))
 
     state = build_state(events, pricing, session_id, turn_ids, now, calibration)
+    # Added here rather than inside build_state, which turns events into figures
+    # and has no business reading the environment. This is also the only place
+    # that *can* read it: the hook runs inside the session it is reporting on, so
+    # a key exported for that session alone is visible in this process and no
+    # other.
+    state["billing"] = billing.detect()
     store.write_json_atomic(paths.state_path(), state)
 
     # Advance the bookmark only after the state it describes is on disk, so a

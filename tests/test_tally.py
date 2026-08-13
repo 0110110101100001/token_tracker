@@ -37,8 +37,13 @@ class TallyTestCase(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
         self.transcripts = Path(tempfile.mkdtemp())
+        # refresh() records how the session is billed, which reads Claude Code's
+        # own directory. Redirected here so no test goes near the real
+        # .credentials.json and its live tokens.
+        self.claude_home = Path(tempfile.mkdtemp())
         for name, value in (("COST_METER_HOME", self.home),
-                            ("COST_METER_TRANSCRIPTS", self.transcripts)):
+                            ("COST_METER_TRANSCRIPTS", self.transcripts),
+                            ("COST_METER_CLAUDE_HOME", self.claude_home)):
             previous = os.environ.get(name)
             os.environ[name] = str(value)
             self.addCleanup(self._restore, name, previous)
@@ -99,6 +104,33 @@ class TestRefreshHappyPath(TallyTestCase):
                     message("m2", "s1", self.now - 60))
         state = tally.refresh("s1", now=self.now)
         self.assertAlmostEqual(state["last_turn_usd"], 2 * ONE_MILLION_OUT_USD)
+
+
+class TestBillingIsRecorded(TallyTestCase):
+    """The hook is the only place that can answer how this session pays.
+
+    It runs inside the session's own process, so a key exported for one session
+    is visible to it and to nothing else. Asking from the panel instead would
+    report the panel's environment for every session on the machine.
+    """
+
+    def test_the_state_records_how_the_session_is_billed(self):
+        (self.claude_home / ".credentials.json").write_text(
+            json.dumps({"claudeAiOauth": {"subscriptionType": "team",
+                                          "rateLimitTier": "default_claude_max_5x"}}),
+            encoding="utf-8")
+        self.append("a.jsonl", message("m1", "s1", self.now - 60))
+
+        state = tally.refresh("s1", now=self.now)
+        self.assertEqual(state["billing"],
+                         {"mode": "seat", "label": "team · max 5x"})
+
+    def test_an_unanswerable_environment_is_recorded_as_unknown(self):
+        # Nothing written into claude_home at all. The row has to say so rather
+        # than let the previous run's answer stand.
+        self.append("a.jsonl", message("m1", "s1", self.now - 60))
+        state = tally.refresh("s1", now=self.now)
+        self.assertEqual(state["billing"]["mode"], "unknown")
 
 
 class TestConcurrentSessions(TallyTestCase):
