@@ -10,7 +10,7 @@ import sys
 import time
 import traceback
 
-from cost_meter import billing, paths, store
+from cost_meter import billing, paths, store, utilization
 from cost_meter.log import write as _log
 from cost_meter.parser import scan
 from cost_meter.pricing import load_pricing
@@ -59,7 +59,6 @@ def refresh(session_id, now=None):
     store.prune_events(events_path, now - PRUNE_DAYS * 86400)
 
     pricing = load_pricing(paths.pricing_path())
-    calibration = store.read_json(paths.config_path(), default={}) or {}
     events = store.read_events(events_path)
 
     # last_turn is scoped to this session's own bookmark rather than to what this
@@ -69,7 +68,11 @@ def refresh(session_id, now=None):
     marks = store.read_json(marks_path, default={}) or {}
     turn_ids, mark = new_turn_ids(events, session_id, marks.get(session_id))
 
-    state = build_state(events, pricing, session_id, turn_ids, now, calibration)
+    # Read here rather than inside build_state, which turns events into figures
+    # and has no business reading files outside the ledger -- the same split
+    # billing.detect() gets below.
+    state = build_state(events, pricing, session_id, turn_ids, now,
+                        utilization.read(now))
     # Added here rather than inside build_state, which turns events into figures
     # and has no business reading the environment. This is also the only place
     # that *can* read it: the hook runs inside the session it is reporting on, so

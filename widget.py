@@ -21,7 +21,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from cost_meter import autolaunch, paths, roll, store, summary  # noqa: E402
+from cost_meter import autolaunch, paths, roll, store, summary, utilization  # noqa: E402
 
 MARGIN = 24
 WIDTH = 240
@@ -57,9 +57,18 @@ STALE_POLL_SECONDS = 60
 # rolls from zero instead, through `Roll.replay`: the distance between one
 # turn's cost and the next one's is not a quantity worth animating, and it would
 # run the row downwards whenever a cheap turn followed an expensive one.
-ROLL_KEYS = ("last_turn", "session", "today", "window_5h", "window_7d")
+#
+# The two limit rows are not among them. They carry an integer percentage that
+# moves once every few hours, which has nothing to tween, and the dollars that
+# used to animate there have moved into the tooltip.
+ROLL_KEYS = ("last_turn", "session", "today")
 TURN_KEY = "last_turn"
 WINDOW_KEYS = ("window_5h", "window_7d")
+# Which account limit each row draws, named as the server names them.
+WINDOW_KINDS = {"window_5h": utilization.SESSION,
+                "window_7d": utilization.WEEKLY}
+# The server's severity, mapped onto the panel's colour classes.
+SEVERITY_CLASSES = {"normal": "green", "warning": "amber", "critical": "red"}
 ROLL_FRAME_MS = 16
 ROLL_MIN_DELTA = 0.01
 
@@ -169,18 +178,29 @@ def _fmt_usd(value):
     return "—" if value is None else f"${value:,.2f}"
 
 
-def _fmt_reset(value):
-    """Local `HH:MM` for a block's reset time, or None if there isn't one.
+def _fmt_reset(value, now=None):
+    """Local `HH:MM` for a window's reset time, or `Sat 02:59` when it is not today.
 
     Local time because that is the clock /usage prints, and the row is only
     worth having if the two can be read against each other. An unparseable
     value is dropped rather than shown raw: a broken timestamp on the row would
     look like a limit resetting at a nonsense time.
+
+    The weekday appears only when the reset falls on a different date. The
+    5-hour block is at most five hours out, so `18:30` can only mean today and
+    the short form is right; the weekly window resets days away, where a bare
+    `02:59` reads as tonight. Same rule for both rows rather than one per row --
+    a 5-hour block opened late in the evening resets tomorrow, and the weekday is
+    just as wanted there.
     """
     epoch = summary.parse_updated_at(value)
     if epoch is None:
         return None
-    return datetime.fromtimestamp(epoch).strftime("%H:%M")
+    when = datetime.fromtimestamp(epoch)
+    now = time.time() if now is None else now
+    if when.date() == datetime.fromtimestamp(now).date():
+        return when.strftime("%H:%M")
+    return when.strftime("%a %H:%M")
 
 
 def turn_text(value, moving=False):
@@ -196,32 +216,111 @@ def turn_text(value, moving=False):
     return f"+{_fmt_usd(value)}"
 
 
-def window_row(window):
+def severity_class(severity, pct):
+    """The colour class for a limit row.
+
+    The server's own severity is preferred over a threshold of ours: it knows
+    where the thresholds are, and they move — this account is currently carrying
+    a +50 % weekly promotion, which no number compiled in here would follow.
+
+    An unrecognised value falls back to the percentage rather than to green. A
+    word this panel has never seen must not be what paints a row at 95 % as safe.
+    """
+    return SEVERITY_CLASSES.get(severity) or (
+        "red" if pct >= RED_AT else "amber" if pct >= AMBER_AT else "green")
+
+
+def _pct_of(limit):
+    """The row's whole-number percentage, or None if it hasn't got one.
+
+    `bool` is rejected explicitly because it satisfies `isinstance(x, int)`, and
+    `True` would otherwise paint a row at 1 %.
+    """
+    pct = (limit or {}).get("pct")
+    if isinstance(pct, bool) or not isinstance(pct, int):
+        return None
+    return pct
+
+
+def window_expired(limit, now):
+    """Whether this figure describes a window that has already reset.
+
+    Age cannot answer this. A figure fetched four hours ago still bounds a weekly
+    window, and one fetched twenty minutes ago bounds nothing if the 5-hour block
+    turned over in between — so the reset time the server sent is what decides.
+
+    A row without a reset time never expires: there is nothing to compare, and
+    the older cache shape does not always carry one.
+    """
+    end = summary.parse_updated_at((limit or {}).get("resets_at"))
+    return end is not None and now >= end
+
+
+def window_row(window, limit, now=None):
     """The text and style class for one limit row, as (text, class).
 
-    Calibrated rows carry both figures. The percentage alone would mean
-    calibrating traded the dollar amount away — and since the percentage is only
-    ever an estimate against a ceiling you derived yourself, the dollars beside it
-    are the part that is actually measured. The `~` is what marks the estimate;
-    there is no room for the word as well once both numbers are on the row.
+    With an account figure the row is that figure and nothing else. The percentage
+    describes the whole account and the dollars describe this machine; two scopes
+    on one row read as one claim, and the reader divides them — which is exactly
+    the arithmetic the old calibrated percentage was doing wrongly. The dollars
+    move to the tooltip, which has the room to say which is which.
 
-    The 5-hour row also names when its block resets; the weekly row carries no
-    such key and is unchanged. That time rides with the percentage rather than
-    with the dollars: what it is for is saying which block the estimate beside it
-    describes, which is how a calibration gets checked against /usage. On a row
-    with no percentage it qualifies nothing, and a bare clock time next to a
-    dollar figure reads as a second unrelated claim instead of as context for the
-    first — so an uncalibrated row shows the dollars alone.
+    The percentage is always marked `≥`. The figure is re-asked of the server when
+    a session starts and when the user runs /usage, and at no other time, so it is
+    usually hours old — and usage within a window only grows, which makes it a
+    floor rather than a reading. Unconditional, because a marker that came and
+    went would imply the unmarked form is exact, and it never is: even a
+    twelve-second-old figure has had twelve seconds to rise. This is the `~`
+    marker's replacement and it claims something stronger — `~` admitted the
+    number could be wrong in either direction.
+
+    The reset time rides with the percentage, as it always has: what it is for is
+    saying which window the figure describes. Once that time has passed the row is
+    withdrawn, because the window it described is gone.
+
+    Without an account figure the row falls back to the dollars alone, muted,
+    exactly as it read before any of this existed. Interpolating a percentage from
+    local dollars would be an invented number.
     """
-    usd = _fmt_usd(window.get("usd"))
-    pct = window.get("pct")
-    if pct is None:
-        # Not calibrated: dollars only, muted, rather than an invented number.
-        return usd, "muted"
-    resets = _fmt_reset(window.get("resets_at"))
+    now = time.time() if now is None else now
+    pct = _pct_of(limit)
+    if pct is None or window_expired(limit, now):
+        return _fmt_usd(window.get("usd")), "muted"
+    resets = _fmt_reset(limit.get("resets_at"), now)
     tail = "" if resets is None else f" · {resets}"
-    return (f"{usd} ~{pct} %{tail}",
-            "red" if pct >= RED_AT else "amber" if pct >= AMBER_AT else "green")
+    return f"≥{pct} %{tail}", severity_class(limit.get("severity"), pct)
+
+
+def window_tooltip(window, limit, age_s, now=None):
+    """The tooltip for one limit row: which figure belongs to which scope.
+
+    This is where the dollar figure went when it left the row, and the only place
+    the two scopes are stated rather than implied.
+
+    The age is here rather than on the row because hours-old figures are the
+    normal case, so an age beside every percentage would be permanent noise —
+    while somebody wondering why a percentage has not moved all afternoon wants
+    exactly this, together with the one thing that would move it.
+    """
+    now = time.time() if now is None else now
+    lines = [f"{_fmt_usd(window.get('usd'))} on this machine"]
+    pct = _pct_of(limit)
+    if pct is None:
+        lines.append("no account figure available")
+        return "\n".join(lines)
+    if window_expired(limit, now):
+        lines.append("the account figure describes a window that has reset")
+        return "\n".join(lines)
+    resets = _fmt_reset(limit.get("resets_at"), now)
+    account = f"account at least {pct} %"
+    if resets is not None:
+        account += f", resets {resets}"
+    lines.append(account)
+    if age_s is None:
+        lines.append("/usage refreshes it")
+    else:
+        lines.append(f"figure {summary.format_age(age_s)} old; /usage refreshes it")
+    return "\n".join(lines)
 
 
 def billing_text(billing):
@@ -342,8 +441,8 @@ class CostMeter(Gtk.Window):
         grid.attach(Gtk.Separator(), 0, 6, 2, 1)
         self.billing = _row(grid, 7, "billing", self.labels)
         # Split because `muted` has two owners: staleness for all five rows, and
-        # draw_row for the two window rows when there is no calibration. The
-        # billing row rides with the plain ones — it is drawn once from
+        # draw_limits for the two window rows when there is no account figure.
+        # The billing row rides with the plain ones — it is drawn once from
         # state.json and only staleness ever mutes it.
         self.usd_values = (self.last_turn, self.session, self.today,
                            self.billing)
@@ -352,16 +451,19 @@ class CostMeter(Gtk.Window):
                      "session": self.session, "today": self.today,
                      "window_5h": self.window_5h, "window_7d": self.window_7d}
 
-        # Animation state. `windows` holds the last two window dicts because a
-        # rolling limit row rebuilds composite text — dollars, percentage and
-        # reset time — from a dollar figure the roll owns and two fields it does
-        # not. `_roll_source` is a single timer for the whole panel, retargeted
-        # in place rather than stacked; `_roll_began` is what progress is
-        # measured from, so a slow frame shortens the roll instead of stretching
-        # it past its duration, and `_roll_ms` is how long this particular roll
-        # was given — it depends on the distance, so it is decided per roll.
+        # Animation state. `_roll_source` is a single timer for the whole panel,
+        # retargeted in place rather than stacked; `_roll_began` is what progress
+        # is measured from, so a slow frame shortens the roll instead of
+        # stretching it past its duration, and `_roll_ms` is how long this
+        # particular roll was given — it depends on the distance, so it is
+        # decided per roll.
         self.roll = roll.Roll(min_delta=ROLL_MIN_DELTA)
+        # The last two window dicts and the account's limit figures. Held rather
+        # than read where they are needed because the limit rows are repainted
+        # outside refresh() — a five-hour block can reset with no turn happening,
+        # and the staleness poll is what notices.
         self.windows = {key: {} for key in WINDOW_KEYS}
+        self.limits = {}
         # The `updated_at` the turn row was last counted up for. It is what says
         # a turn is new; the figure cannot, because two turns costing the same
         # cent are ordinary.
@@ -533,10 +635,11 @@ class CostMeter(Gtk.Window):
     def update_config(self, mutate):
         """Read-modify-write config under the lock.
 
-        calibrate.py writes ceilings into the same file; without the lock a
-        drag could clobber a ceiling written moments earlier and silently send
-        the display back to dollars. calibrate.py uses the same helper, so both
-        sides hold the lock across the read as well as the write.
+        cost_meter/autolaunch.py writes the paused flag into the same file, and
+        the panel itself writes a position from one process and a scale from
+        another; without the lock a drag could clobber whichever value was written
+        moments earlier. Every writer uses this same helper, so all of them hold
+        the lock across the read as well as the write.
         """
         try:
             with store.update_json_locked(paths.config_path(),
@@ -579,10 +682,10 @@ class CostMeter(Gtk.Window):
 
         for key in WINDOW_KEYS:
             self.windows[key] = state.get(key) or {}
+        self.limits = state.get("limits") or {}
         rolling = self.roll.retarget({
             "session": (state.get("session") or {}).get("usd"),
             "today": state.get("today_usd"),
-            **{key: self.windows[key].get("usd") for key in WINDOW_KEYS},
         }) or turn_rolling
 
         # A broken tally exits 0 and simply stops rewriting state.json, so
@@ -599,6 +702,7 @@ class CostMeter(Gtk.Window):
             rolling = False
         for key in ROLL_KEYS:
             self.draw_row(key)
+        self.draw_limits()
         # Not a rolling row: it is a fact, not a quantity, and there is nothing
         # between `team · max 5x` and `API` to animate through.
         self.billing.set_text(billing_text(state.get("billing")))
@@ -619,7 +723,7 @@ class CostMeter(Gtk.Window):
         else:
             self.warning.hide()
 
-        # After draw_row, which owns `muted` for the uncalibrated case.
+        # After draw_limits, which owns `muted` for the no-account-figure case.
         self.set_stale(stale)
         return True
 
@@ -671,20 +775,42 @@ class CostMeter(Gtk.Window):
                 for name in LIMIT_CLASSES:
                     context.remove_class(name)
                 context.add_class("muted")
-        # When fresh, the window rows are left alone: draw_row has already
-        # set or cleared their `muted` for the uncalibrated case, and clearing it
-        # here would present an uncalibrated dollar figure as a calibrated one.
+        # When fresh, the window rows are left alone: draw_limits has already set
+        # or cleared their `muted` for the no-account-figure case, and clearing it
+        # here would present a bare dollar figure as an account percentage.
+
+    def draw_limits(self):
+        """Paint both limit rows from the account figures in state.json.
+
+        Separate from draw_row because these rows do not animate: there is nothing
+        to tween between 11 % and 12 %, and the figure behind them is re-asked of
+        the server only when a session starts or the user runs /usage.
+
+        Called from refresh(), which the 60-second staleness poll also drives —
+        and it has to be, because a five-hour block can reset while nothing is
+        writing state.json. That is the one case where a row changes with no new
+        data behind it: the percentage is withdrawn because the window it
+        described is gone.
+        """
+        rows = self.limits.get("rows") or {}
+        age = self.limits.get("age_s")
+        for key in WINDOW_KEYS:
+            window = self.windows[key]
+            limit = rows.get(WINDOW_KINDS[key])
+            label = self.rows[key]
+            context = label.get_style_context()
+            for name in LIMIT_CLASSES + ("muted",):
+                context.remove_class(name)
+            text, style = window_row(window, limit)
+            context.add_class(style)
+            label.set_text(text)
+            label.set_tooltip_text(window_tooltip(window, limit, age))
 
     def draw_row(self, key):
         """Paint one value row from whatever the roll says it is showing.
 
         The dollar figure comes from the roll rather than from state.json, so a
         frame mid-tween and a settled row go through exactly one code path.
-        For the limit rows that figure is substituted into the window dict and
-        `window_row` builds the composite text as usual: the percentage and the
-        reset time hold still while the dollars move, which is right — the
-        percentage is a rounded estimate against a ceiling you derived yourself,
-        and animating it would put motion on the least measured thing on screen.
 
         Colour is whatever the row's own state says it is, mid-roll included:
         the only thing a frame changes is the text. Dimming the digits while
@@ -696,10 +822,7 @@ class CostMeter(Gtk.Window):
             context.remove_class(name)
 
         value = self.roll.shown(key)
-        if key in WINDOW_KEYS:
-            text, style = window_row({**self.windows[key], "usd": value})
-            context.add_class(style)
-        elif key == TURN_KEY:
+        if key == TURN_KEY:
             text = turn_text(value, self.roll.moving(key))
         else:
             text = _fmt_usd(value)

@@ -3,6 +3,7 @@
 
 from datetime import datetime, timezone
 
+from . import utilization
 from .pricing import UnknownModel, price_event
 
 BLOCK_5H_SECONDS = 5 * 3600
@@ -21,12 +22,6 @@ STALE_AFTER_SECONDS = 600
 def _local_midnight(now_epoch):
     local = datetime.fromtimestamp(now_epoch)
     return local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-
-
-def _pct(usd, ceiling):
-    if not ceiling:
-        return None
-    return round(100.0 * usd / ceiling)
 
 
 def current_block(timestamps, now_epoch):
@@ -167,9 +162,30 @@ def format_age(seconds):
     return f"{days} d {hours} h"
 
 
-def build_state(events, pricing, session_id, new_ids, now_epoch, calibration):
+def anchor_block(limits, now_epoch):
+    """The 5-hour block bounded by the server's reset time, or None.
+
+    The server knows when the block it is reporting on ends. `current_block` only
+    knows when this machine last sent something, and on an account used from more
+    than one machine those disagree: a block another machine opened began before
+    anything in these events, so the local chain re-anchors in the wrong place and
+    the dollar figure describes a window nobody has.
+
+    None when there are no account figures, when the row carries no usable reset
+    time, or when that time has already passed — a block that has reset is not the
+    open one, and the caller falls back to the local guess.
+    """
+    row = ((limits or {}).get("rows") or {}).get(utilization.SESSION)
+    end = parse_updated_at((row or {}).get("resets_at"))
+    if end is None or now_epoch >= end:
+        return None
+    return end - BLOCK_5H_SECONDS, end
+
+
+def build_state(events, pricing, session_id, new_ids, now_epoch, limits):
     midnight = _local_midnight(now_epoch)
-    block = current_block([event[0] for event in events], now_epoch)
+    block = anchor_block(limits, now_epoch) or current_block(
+        [event[0] for event in events], now_epoch)
     unknown = set()
 
     session_usd = today_usd = usd_5h = usd_7d = last_turn_usd = 0.0
@@ -198,18 +214,14 @@ def build_state(events, pricing, session_id, new_ids, now_epoch, calibration):
         "last_turn_usd": round(last_turn_usd, 4),
         "session": {"id": session_id, "usd": round(session_usd, 4)},
         "today_usd": round(today_usd, 4),
-        "window_5h": {
-            "usd": round(usd_5h, 4),
-            "pct": _pct(usd_5h, calibration.get("ceiling_5h_usd")),
-            # When the block resets, so the row can say it outright. This is the
-            # figure /usage puts on screen, and having it here is what lets a
-            # calibration be checked against /usage rather than guessed at.
-            "resets_at": (None if block is None else
-                          datetime.fromtimestamp(block[1], timezone.utc).isoformat()),
-        },
-        "window_7d": {
-            "usd": round(usd_7d, 4),
-            "pct": _pct(usd_7d, calibration.get("ceiling_7d_usd")),
-        },
+        # Dollars only. The percentage and the reset time live under `limits`,
+        # which has one owner: these figures are this machine's and those are the
+        # account's, and a row carrying both would invite dividing one by the
+        # other -- which is exactly what the calibrated percentage did wrongly.
+        "window_5h": {"usd": round(usd_5h, 4)},
+        "window_7d": {"usd": round(usd_7d, 4)},
+        # The account's own figures, straight through. None when Claude Code has
+        # cached nothing usable -- see cost_meter/utilization.py.
+        "limits": limits,
         "unknown_models": sorted(unknown),
     }

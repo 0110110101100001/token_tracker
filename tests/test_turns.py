@@ -83,7 +83,8 @@ class TestNewTurnIds(unittest.TestCase):
         self.assertIsNone(mark)
 
     def test_a_missing_session_id_is_not_bookmarked(self):
-        # calibrate.py refreshes with session_id="" and must not claim a turn.
+        # A hand-run recount (`pixi run tally` with stdin closed) refreshes with
+        # session_id="" and must not claim a turn against any session.
         ids, mark = new_turn_ids([event(100.0, "a")], "", None)
         self.assertEqual(ids, set())
         self.assertIsNone(mark)

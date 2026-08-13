@@ -15,6 +15,11 @@ how the session is being billed, which reads ~/.claude/.credentials.json. A test
 must not go near the real one -- it holds live OAuth tokens, and a test that
 depended on it would pass or fail according to how the machine happens to be
 logged in.
+
+COST_METER_CLAUDE_CONFIG points at a stand-in for ~/.claude.json, which holds the
+account's limit figures. It is a separate variable rather than something derived
+from COST_METER_CLAUDE_HOME because that file is a *sibling* of ~/.claude/ rather
+than a file inside it, so redirecting the directory does not move it.
 """
 
 import os
@@ -29,11 +34,13 @@ class TempHome(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.transcripts = os.path.join(self.tmp, "transcripts")
         self.claude_home = os.path.join(self.tmp, "claude")
+        self.claude_config = os.path.join(self.tmp, "claude.json")
         os.makedirs(self.transcripts)
         os.makedirs(self.claude_home)
         for name, value in (("COST_METER_HOME", self.tmp),
                             ("COST_METER_TRANSCRIPTS", self.transcripts),
-                            ("COST_METER_CLAUDE_HOME", self.claude_home)):
+                            ("COST_METER_CLAUDE_HOME", self.claude_home),
+                            ("COST_METER_CLAUDE_CONFIG", self.claude_config)):
             self.addCleanup(self._restore, name, os.environ.get(name))
             os.environ[name] = value
 
@@ -49,3 +56,13 @@ class TempHome(unittest.TestCase):
 
     def write_config(self, config):
         store.write_json_atomic(paths.config_path(), config)
+
+    def write_claude_config(self, data):
+        """Stand in for ~/.claude.json, which holds the account's limit figures.
+
+        Redirected for the same reason as .credentials.json beside it: the real
+        file describes however this machine happens to be logged in and how
+        recently it was used, so a test that read it would pass or fail on the
+        weather.
+        """
+        store.write_json_atomic(paths.claude_config_path(), data)

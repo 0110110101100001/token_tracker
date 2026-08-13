@@ -41,9 +41,15 @@ class TallyTestCase(unittest.TestCase):
         # own directory. Redirected here so no test goes near the real
         # .credentials.json and its live tokens.
         self.claude_home = Path(tempfile.mkdtemp())
+        # refresh() also reads the account's cached limit figures out of
+        # ~/.claude.json. Left at its default, the real file's reset time bounds
+        # the 5-hour window and these fixtures fall outside it -- which reads as
+        # a wrong dollar figure rather than as an error.
+        self.claude_config = self.claude_home / "config-absent.json"
         for name, value in (("COST_METER_HOME", self.home),
                             ("COST_METER_TRANSCRIPTS", self.transcripts),
-                            ("COST_METER_CLAUDE_HOME", self.claude_home)):
+                            ("COST_METER_CLAUDE_HOME", self.claude_home),
+                            ("COST_METER_CLAUDE_CONFIG", self.claude_config)):
             previous = os.environ.get(name)
             os.environ[name] = str(value)
             self.addCleanup(self._restore, name, previous)
@@ -200,7 +206,7 @@ class TestSessionMarks(TallyTestCase):
         marks = store.read_json(paths.session_marks_path())
         self.assertEqual(sorted(marks), ["s2"])
 
-    def test_calibrates_empty_session_id_writes_no_bookmark(self):
+    def test_an_empty_session_id_writes_no_bookmark(self):
         self.append("a.jsonl", message("a1", "s1", self.now - 60))
         state = tally.refresh("", now=self.now)
 

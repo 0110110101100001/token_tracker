@@ -89,3 +89,20 @@ def credentials_path():
 
 def claude_settings_path():
     return claude_home() / "settings.json"
+
+
+def claude_config_path():
+    """Claude Code's own config file — a sibling of claude_home(), not inside it.
+
+    This is where Claude Code caches what the server says about the account's
+    limits, which is the one thing the transcripts cannot tell us: a limit
+    belongs to the account, and a transcript only records this machine.
+
+    Overridable on its own rather than derived from claude_home(), for the reason
+    that function already gives and one more. Here the consequence of deriving it
+    would be worse than a confusing test: claude_home() is redirected in every
+    test, so a derived path would never point at the real file, and the reader
+    would look permanently empty rather than wrong.
+    """
+    override = os.environ.get("COST_METER_CLAUDE_CONFIG")
+    return Path(override) if override else Path.home() / ".claude.json"

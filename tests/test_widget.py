@@ -20,9 +20,10 @@ import ctypes
 import os
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 import widget
+from tests.support import TempHome
 from cost_meter import autolaunch, launch, paths, roll, store
 
 HAS_DISPLAY = launch.has_display()
@@ -77,7 +78,7 @@ class AutolaunchToggleTest(unittest.TestCase):
     and getting them wrong fails silently in the worst direction: a menu that
     reads `Resume auto-launch` while every new session keeps opening the panel
     anyway. The panel's config writer is also the one that has to preserve the
-    window position and the ceilings sharing that file.
+    window position and the scale sharing that file.
     """
 
     def setUp(self):
@@ -158,81 +159,154 @@ class TaskbarTest(unittest.TestCase):
                          f"(exstyle 0x{exstyle:08X})")
 
 
-class WindowRowTest(unittest.TestCase):
-    """A calibrated row carries the dollar figure as well as the percentage.
+class LimitRowTest(unittest.TestCase):
+    """The limit rows carry the account's percentage, not this machine's dollars.
 
-    It used to show the percentage alone, so calibrating traded the dollar figure
-    away: there was no way to see both, and no way back short of hand-editing
-    data/config.json.
+    The two figures describe different things -- the percentage the whole account,
+    the dollars this installation -- and side by side on one row they read as one
+    claim, which invites dividing one by the other. That division is exactly what
+    the old calibrated percentage got wrong. The dollars moved to the tooltip.
     """
 
-    def test_an_uncalibrated_row_shows_dollars_and_claims_no_colour(self):
-        self.assertEqual(widget.window_row({"usd": 6.4, "pct": None}),
+    def setUp(self):
+        # Fixed instants rather than the wall clock, so nothing here depends on
+        # when the suite runs: a reset an hour out is open, one in the past is
+        # not, and one two days out is on another date. Built through astimezone()
+        # so the assertions do not depend on the machine's zone either -- the row
+        # renders in local time, as /usage does.
+        self.now = datetime(2026, 8, 13, 17, 0, 0).astimezone().timestamp()
+        self.iso = datetime(2026, 8, 13, 18, 30, 0).astimezone().isoformat()
+        self.other_day = datetime(2026, 8, 15, 2, 59, 0).astimezone().isoformat()
+
+    def row(self, window, limit):
+        return widget.window_row(window, limit, now=self.now)
+
+    def test_a_row_with_no_account_figure_shows_dollars_and_claims_no_colour(self):
+        self.assertEqual(widget.window_row({"usd": 6.4}, None),
                          ("$6.40", "muted"))
 
-    def test_a_calibrated_row_shows_both(self):
-        self.assertEqual(widget.window_row({"usd": 6.4, "pct": 31}),
-                         ("$6.40 ~31 %", "green"))
+    def test_a_row_with_an_account_figure_shows_the_percentage_alone(self):
+        self.assertEqual(
+            widget.window_row({"usd": 6.4}, {"pct": 31, "severity": "normal"}),
+            ("≥31 %", "green"))
 
-    def test_the_colour_follows_the_percentage_across_both_thresholds(self):
-        self.assertEqual(widget.window_row({"usd": 1.0, "pct": 59})[1], "green")
-        self.assertEqual(widget.window_row({"usd": 1.0, "pct": 60})[1], "amber")
-        self.assertEqual(widget.window_row({"usd": 1.0, "pct": 84})[1], "amber")
-        self.assertEqual(widget.window_row({"usd": 1.0, "pct": 85})[1], "red")
+    def test_the_percentage_is_always_marked_as_a_floor(self):
+        # Usage within a window only grows, so the figure was true when it was
+        # fetched and can only have risen since. Unconditional: a marker that came
+        # and went would imply the unmarked form is exact, and it never is.
+        text = widget.window_row({"usd": 1.0}, {"pct": 5, "severity": "normal"})[0]
+        self.assertTrue(text.startswith("≥"), text)
+
+    def test_the_reset_time_rides_with_the_percentage(self):
+        self.assertEqual(
+            self.row({"usd": 51.04},
+                     {"pct": 6, "severity": "normal", "resets_at": self.iso})[0],
+            "≥6 % · 18:30")
+
+    def test_a_reset_on_another_date_names_the_day(self):
+        # The weekly window resets days out, where a bare `02:59` reads as
+        # tonight. The 5-hour row is same-day and keeps the short form.
+        expected = datetime(2026, 8, 15, 2, 59, 0).strftime("%a 02:59")
+        self.assertEqual(
+            self.row({"usd": 1.0},
+                     {"pct": 17, "severity": "normal",
+                      "resets_at": self.other_day})[0],
+            f"≥17 % · {expected}")
+
+    def test_a_window_that_has_already_reset_is_withdrawn(self):
+        # The figure describes a window that no longer exists, so no bound
+        # survives it -- and the cache's age cannot detect that.
+        past = datetime.fromtimestamp(1000.0, timezone.utc).isoformat()
+        self.assertEqual(
+            widget.window_row({"usd": 6.4},
+                              {"pct": 31, "severity": "normal",
+                               "resets_at": past}, now=2000.0),
+            ("$6.40", "muted"))
+
+    def test_a_row_with_no_reset_time_never_expires(self):
+        self.assertEqual(
+            widget.window_row({"usd": 6.4},
+                              {"pct": 31, "severity": "normal",
+                               "resets_at": None}, now=2000.0)[0],
+            "≥31 %")
+
+    def test_an_unparseable_reset_time_is_dropped_rather_than_shown_raw(self):
+        self.assertEqual(
+            widget.window_row({"usd": 1.0},
+                              {"pct": 5, "severity": "normal",
+                               "resets_at": "not a time"})[0],
+            "≥5 %")
+
+    def test_a_percentage_that_is_not_a_whole_number_is_treated_as_absent(self):
+        for pct in (None, "31", True, 31.5):
+            self.assertEqual(
+                widget.window_row({"usd": 6.4}, {"pct": pct}),
+                ("$6.40", "muted"), pct)
 
     def test_a_missing_dollar_figure_does_not_read_as_zero(self):
         # An em dash rather than $0.00: no recorded spend and no spend are
         # different claims, and the second one is a lie the panel must not tell.
-        self.assertEqual(widget.window_row({})[0], "—")
+        self.assertEqual(widget.window_row({}, None)[0], "—")
 
 
-class ResetTimeTest(unittest.TestCase):
-    """The 5-hour row names the time its block resets, when it has a percentage.
+class SeverityTest(unittest.TestCase):
+    """Colour comes from the server, which knows where the thresholds are."""
 
-    The limit is a fixed block, so there is an actual clock time to show, and it
-    is the same one /usage prints. Having it beside the percentage is what makes
-    a calibration checkable: the percentage is only trustworthy if the panel and
-    /usage agree about which block they are describing.
+    def test_the_servers_severity_decides_the_colour(self):
+        for severity, expected in (("normal", "green"), ("warning", "amber"),
+                                   ("critical", "red")):
+            self.assertEqual(widget.severity_class(severity, 5), expected)
 
-    Without a percentage there is nothing for it to qualify, so it goes: an
-    uncalibrated row is reporting one measured fact, not two unrelated ones.
-    """
+    def test_an_unknown_severity_falls_back_to_the_percentage(self):
+        # A word this panel has never seen must not be what paints a row at 95 %
+        # as safe.
+        self.assertEqual(widget.severity_class("brand-new-word", 95), "red")
+
+    def test_no_severity_falls_back_across_both_thresholds(self):
+        # The older cache shape carries no severity at all.
+        self.assertEqual(widget.severity_class(None, 59), "green")
+        self.assertEqual(widget.severity_class(None, 60), "amber")
+        self.assertEqual(widget.severity_class(None, 84), "amber")
+        self.assertEqual(widget.severity_class(None, 85), "red")
+
+
+class LimitTooltipTest(unittest.TestCase):
+    """Where the dollar figure went, and the only place the scopes are named."""
 
     def setUp(self):
-        # Built from a local wall-clock time so the assertion does not depend on
-        # the machine's zone: the row renders in local time, as /usage does.
-        self.iso = datetime(2026, 8, 11, 19, 4, 0).astimezone().isoformat()
+        # Same fixed instants as LimitRowTest, and for the same reason.
+        self.now = datetime(2026, 8, 13, 17, 0, 0).astimezone().timestamp()
+        self.iso = datetime(2026, 8, 13, 18, 30, 0).astimezone().isoformat()
 
-    def test_a_calibrated_row_names_the_reset_time(self):
-        self.assertEqual(
-            widget.window_row({"usd": 51.04, "pct": 6, "resets_at": self.iso})[0],
-            "$51.04 ~6 % · 19:04")
+    def test_the_tooltip_names_the_scope_of_each_figure(self):
+        text = widget.window_tooltip(
+            {"usd": 71.46},
+            {"pct": 20, "severity": "normal", "resets_at": self.iso}, 1800.0,
+            now=self.now)
+        self.assertIn("$71.46 on this machine", text)
+        self.assertIn("at least 20 %", text)
+        self.assertIn("resets 18:30", text)
+        self.assertIn("30 min", text)
 
-    def test_an_uncalibrated_row_drops_the_reset_time(self):
-        # The time qualifies the percentage: it says which block the estimate
-        # describes. With no percentage on the row it qualifies nothing, and a
-        # bare clock time beside a dollar figure reads as a second, unrelated
-        # claim rather than as context for the first.
-        self.assertEqual(
-            widget.window_row({"usd": 51.04, "pct": None, "resets_at": self.iso}),
-            ("$51.04", "muted"))
+    def test_the_tooltip_says_what_refreshes_the_figure(self):
+        # The one thing a reader can act on: nothing else moves it.
+        text = widget.window_tooltip(
+            {"usd": 71.46}, {"pct": 20, "severity": "normal"}, 1800.0,
+            now=self.now)
+        self.assertIn("/usage", text)
 
-    def test_a_row_with_no_open_block_says_nothing_about_resetting(self):
-        # No block is open, so there is no reset time to name and inventing one
-        # would be a claim about a limit that is not currently running.
-        self.assertEqual(
-            widget.window_row({"usd": 0.0, "pct": 0, "resets_at": None})[0],
-            "$0.00 ~0 %")
+    def test_the_tooltip_says_so_when_there_is_no_account_figure(self):
+        text = widget.window_tooltip({"usd": 71.46}, None, None)
+        self.assertIn("$71.46 on this machine", text)
+        self.assertIn("no account figure", text)
 
-    def test_the_week_row_is_unaffected(self):
-        # The weekly cap has no block boundary, so its dict carries no key at all.
-        self.assertEqual(widget.window_row({"usd": 805.23, "pct": 40})[0],
-                         "$805.23 ~40 %")
-
-    def test_an_unparseable_reset_time_is_dropped_rather_than_shown_raw(self):
-        self.assertEqual(
-            widget.window_row({"usd": 1.0, "pct": 5, "resets_at": "not a time"})[0],
-            "$1.00 ~5 %")
+    def test_the_tooltip_says_so_when_the_window_has_reset(self):
+        past = datetime.fromtimestamp(1000.0, timezone.utc).isoformat()
+        text = widget.window_tooltip({"usd": 71.46},
+                                     {"pct": 20, "resets_at": past}, 60.0,
+                                     now=2000.0)
+        self.assertIn("has reset", text)
+        self.assertNotIn("at least 20 %", text)
 
 
 class TurnTextTest(unittest.TestCase):
@@ -497,7 +571,7 @@ class ResizeWiringTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")
-class BillingRowOnThePanelTest(unittest.TestCase):
+class BillingRowOnThePanelTest(TempHome):
     """The row is built, filled from state.json, and greys out with the rest.
 
     Muted alongside the figures because it comes from the same snapshot: if the
@@ -507,6 +581,11 @@ class BillingRowOnThePanelTest(unittest.TestCase):
     """
 
     def setUp(self):
+        # TempHome first, and it is load-bearing rather than tidiness: draw()
+        # writes state.json, and without the redirect that is the user's real
+        # data/state.json -- which this class did clobber when run as
+        # `python -m unittest tests.test_widget` instead of through run_tests.py.
+        super().setUp()
         self.window = widget.CostMeter()
         self.window.disconnect_by_func(Gtk.main_quit)
         self.addCleanup(self.window.destroy)
@@ -516,8 +595,9 @@ class BillingRowOnThePanelTest(unittest.TestCase):
                 "last_turn_usd": 0.0,
                 "session": {"id": "s1", "usd": 1.0},
                 "today_usd": 1.0,
-                "window_5h": {"usd": 1.0, "pct": None},
-                "window_7d": {"usd": 1.0, "pct": None},
+                "window_5h": {"usd": 1.0},
+                "window_7d": {"usd": 1.0},
+                "limits": None,
                 "unknown_models": [], **extra}
 
     def draw(self, state):
@@ -546,12 +626,84 @@ class BillingRowOnThePanelTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")
+class LimitRowsOnThePanelTest(TempHome):
+    """draw_limits, through a real panel: text, colour and the tooltip.
+
+    The row text is covered by LimitRowTest without GTK; what this adds is the
+    wiring -- that refresh() reaches draw_limits at all, that the tooltip is
+    actually attached to the label rather than merely computed, and that the
+    account figures are read from the right place in state.json. None of that is
+    visible in the selftest render, which has no tooltip to photograph.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.window = widget.CostMeter()
+        self.window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(self.window.destroy)
+
+    def state(self, limits):
+        return {"updated_at": datetime.now().astimezone().isoformat(),
+                "last_turn_usd": 0.0,
+                "session": {"id": "s1", "usd": 1.0},
+                "today_usd": 1.0,
+                "window_5h": {"usd": 54.73},
+                "window_7d": {"usd": 767.24},
+                "limits": limits,
+                "unknown_models": []}
+
+    def draw(self, limits):
+        store.write_json_atomic(paths.state_path(), self.state(limits))
+        self.window.refresh()
+
+    def figures(self, pct_5h=12, pct_week=17, resets_at=None):
+        return {"age_s": 681.2, "rows": {
+            "session": {"pct": pct_5h, "severity": "normal",
+                        "resets_at": resets_at, "scope": None},
+            "weekly_all": {"pct": pct_week, "severity": "critical",
+                           "resets_at": None, "scope": None}}}
+
+    def test_each_row_shows_its_own_limit(self):
+        self.draw(self.figures())
+        self.assertEqual(self.window.window_5h.get_text(), "≥12 %")
+        self.assertEqual(self.window.window_7d.get_text(), "≥17 %")
+
+    def test_the_colour_comes_from_that_rows_severity(self):
+        self.draw(self.figures())
+        self.assertTrue(
+            self.window.window_5h.get_style_context().has_class("green"))
+        self.assertTrue(
+            self.window.window_7d.get_style_context().has_class("red"))
+
+    def test_the_tooltip_carries_the_dollars_that_left_the_row(self):
+        self.draw(self.figures())
+        tooltip = self.window.window_5h.get_tooltip_text()
+        self.assertIn("$54.73 on this machine", tooltip)
+        self.assertIn("at least 12 %", tooltip)
+        self.assertIn("/usage", tooltip)
+
+    def test_without_account_figures_the_rows_fall_back_to_dollars(self):
+        self.draw(None)
+        self.assertEqual(self.window.window_5h.get_text(), "$54.73")
+        self.assertTrue(
+            self.window.window_5h.get_style_context().has_class("muted"))
+
+    def test_a_window_that_has_reset_is_withdrawn_without_a_new_state_file(self):
+        # The case that makes draw_limits reachable from the staleness poll: the
+        # block turns over while nothing is writing state.json.
+        past = datetime.fromtimestamp(time.time() - 60).astimezone().isoformat()
+        self.draw(self.figures(resets_at=past))
+        self.assertEqual(self.window.window_5h.get_text(), "$54.73")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
 class ScaleMemoryTest(unittest.TestCase):
     """A resized panel opens at the size it was left at.
 
-    The scale shares config.json with the ceilings and the window position, so
-    it goes through the same locked read-modify-write those do; a panel that
-    forgot its size on every restart would make the whole feature pointless.
+    The scale shares config.json with the window position and the paused
+    auto-launch flag, so it goes through the same locked read-modify-write those
+    do; a panel that forgot its size on every restart would make the whole
+    feature pointless.
     """
 
     def setUp(self):
