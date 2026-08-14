@@ -20,6 +20,7 @@ import ctypes
 import os
 import time
 import unittest
+import unittest.mock
 from datetime import datetime, timezone
 
 import widget
@@ -33,7 +34,7 @@ if HAS_DISPLAY:
 
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
-    from gi.repository import Gdk, Gtk
+    from gi.repository import Gdk, GLib, Gtk
 
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_APPWINDOW = 0x00040000
@@ -188,20 +189,21 @@ class LimitRowTest(unittest.TestCase):
     def test_a_row_with_an_account_figure_shows_the_percentage_alone(self):
         self.assertEqual(
             widget.window_row({"usd": 6.4}, {"pct": 31, "severity": "normal"}),
-            ("≥31 %", "green"))
+            ("≈31 %", "green"))
 
-    def test_the_percentage_is_always_marked_as_a_floor(self):
-        # Usage within a window only grows, so the figure was true when it was
-        # fetched and can only have risen since. Unconditional: a marker that came
-        # and went would imply the unmarked form is exact, and it never is.
+    def test_the_percentage_is_always_marked_as_approximate(self):
+        # Unconditional: the figure is only re-fetched at session start and on
+        # /usage, and usage within a window only grows, so even a seconds-old one
+        # has had time to rise. A marker that came and went would imply the
+        # unmarked form is exact, and it never is.
         text = widget.window_row({"usd": 1.0}, {"pct": 5, "severity": "normal"})[0]
-        self.assertTrue(text.startswith("≥"), text)
+        self.assertTrue(text.startswith("≈"), text)
 
     def test_the_reset_time_rides_with_the_percentage(self):
         self.assertEqual(
             self.row({"usd": 51.04},
                      {"pct": 6, "severity": "normal", "resets_at": self.iso})[0],
-            "≥6 % · 18:30")
+            "≈6 % · 18:30")
 
     def test_a_reset_on_another_date_names_the_day(self):
         # The weekly window resets days out, where a bare `02:59` reads as
@@ -211,7 +213,7 @@ class LimitRowTest(unittest.TestCase):
             self.row({"usd": 1.0},
                      {"pct": 17, "severity": "normal",
                       "resets_at": self.other_day})[0],
-            f"≥17 % · {expected}")
+            f"≈17 % · {expected}")
 
     def test_a_window_that_has_already_reset_is_withdrawn(self):
         # The figure describes a window that no longer exists, so no bound
@@ -228,14 +230,14 @@ class LimitRowTest(unittest.TestCase):
             widget.window_row({"usd": 6.4},
                               {"pct": 31, "severity": "normal",
                                "resets_at": None}, now=2000.0)[0],
-            "≥31 %")
+            "≈31 %")
 
     def test_an_unparseable_reset_time_is_dropped_rather_than_shown_raw(self):
         self.assertEqual(
             widget.window_row({"usd": 1.0},
                               {"pct": 5, "severity": "normal",
                                "resets_at": "not a time"})[0],
-            "≥5 %")
+            "≈5 %")
 
     def test_a_percentage_that_is_not_a_whole_number_is_treated_as_absent(self):
         for pct in (None, "31", True, 31.5):
@@ -714,6 +716,26 @@ class BillingRowOnThePanelTest(TempHome):
         self.assertFalse(
             self.window.billing.get_style_context().has_class("muted"))
 
+    def test_no_two_rows_are_attached_to_the_same_grid_row(self):
+        """The warning row shared row 8 with `billing` and drew on top of it.
+
+        Checked across the whole grid rather than for that one pair: the row
+        indices in __init__ are literal, so the same collision is one inserted
+        row away from happening again anywhere on the panel. Column 0 and
+        column 1 of one row legitimately share a row, so the seats counted are
+        (column, row) cells, not rows.
+        """
+        grid = self.window.grid
+        seats = {}
+        for child in grid.get_children():
+            left = grid.child_get_property(child, "left-attach")
+            top = grid.child_get_property(child, "top-attach")
+            for column in range(left, left + grid.child_get_property(child, "width")):
+                for row in range(top, top + grid.child_get_property(child, "height")):
+                    self.assertNotIn((column, row), seats,
+                                     f"{child} overlaps {seats.get((column, row))}")
+                    seats[(column, row)] = child
+
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")
 class LimitRowsOnThePanelTest(TempHome):
@@ -722,9 +744,16 @@ class LimitRowsOnThePanelTest(TempHome):
     The row text is covered by LimitRowTest without GTK; what this adds is the
     wiring -- that refresh() reaches draw_limits at all, that the tooltip is
     actually attached to the label rather than merely computed, and that the
-    account figures are read from the right place in state.json. None of that is
-    visible in the selftest render, which has no tooltip to photograph.
+    account figures are read from the right place. None of that is visible in the
+    selftest render, which has no tooltip to photograph.
+
+    The figures go into the stand-in for ~/.claude.json rather than into
+    state.json, because that is where the panel now reads them from -- state.json
+    still carries a copy, written by the hook, and the panel deliberately ignores
+    it. test_state_files_copy_of_the_figures_is_ignored holds that line.
     """
+
+    ACCOUNT = "acct-1"
 
     def setUp(self):
         super().setUp()
@@ -732,8 +761,9 @@ class LimitRowsOnThePanelTest(TempHome):
         self.window.disconnect_by_func(Gtk.main_quit)
         self.addCleanup(self.window.destroy)
 
-    def state(self, limits):
-        return {"updated_at": datetime.now().astimezone().isoformat(),
+    def state(self, limits=None, stale=False):
+        written = time.time() - (86400 if stale else 0)
+        return {"updated_at": datetime.fromtimestamp(written).astimezone().isoformat(),
                 "last_turn_usd": 0.0,
                 "session": {"id": "s1", "usd": 1.0},
                 "today_usd": 1.0,
@@ -742,21 +772,60 @@ class LimitRowsOnThePanelTest(TempHome):
                 "limits": limits,
                 "unknown_models": []}
 
-    def draw(self, limits):
-        store.write_json_atomic(paths.state_path(), self.state(limits))
+    def draw(self, figures, state_limits=None, age_s=681.2, stale=False):
+        """Put `figures` in the cache, a state.json beside it, and repaint.
+
+        `figures` is the `limits` array Claude Code caches, or None for a machine
+        with no usable cache at all. `stale` backdates state.json a day, which is
+        the dead-hook case: the dollars stop being current, the cache does not.
+        """
+        if figures is None:
+            self.write_claude_config({})
+        else:
+            self.write_claude_config({
+                "oauthAccount": {"accountUuid": self.ACCOUNT},
+                "cachedUsageUtilization": {
+                    "accountUuid": self.ACCOUNT,
+                    "fetchedAtMs": (time.time() - age_s) * 1000.0,
+                    "utilization": {"limits": figures},
+                },
+            })
+        store.write_json_atomic(paths.state_path(),
+                                self.state(state_limits, stale=stale))
         self.window.refresh()
 
     def figures(self, pct_5h=12, pct_week=17, resets_at=None):
-        return {"age_s": 681.2, "rows": {
-            "session": {"pct": pct_5h, "severity": "normal",
-                        "resets_at": resets_at, "scope": None},
-            "weekly_all": {"pct": pct_week, "severity": "critical",
-                           "resets_at": None, "scope": None}}}
+        return [{"kind": "session", "percent": pct_5h, "severity": "normal",
+                 "resets_at": resets_at, "scope": None, "is_active": True},
+                {"kind": "weekly_all", "percent": pct_week,
+                 "severity": "critical", "resets_at": None, "scope": None,
+                 "is_active": True}]
 
     def test_each_row_shows_its_own_limit(self):
         self.draw(self.figures())
-        self.assertEqual(self.window.window_5h.get_text(), "≥12 %")
-        self.assertEqual(self.window.window_7d.get_text(), "≥17 %")
+        self.assertEqual(self.window.window_5h.get_text(), "≈12 %")
+        self.assertEqual(self.window.window_7d.get_text(), "≈17 %")
+
+    def test_the_figures_come_from_the_cache_not_from_state_json(self):
+        # The gap this closes: Claude Code refreshes its cache on its own
+        # schedule, and until the next turn the hook has not copied the new
+        # figure into state.json. The panel must show the cache's 12 %, not the
+        # copy's 99 %.
+        self.draw(self.figures(),
+                  state_limits={"age_s": 0.0, "rows": {
+                      "session": {"pct": 99, "severity": "critical",
+                                  "resets_at": None, "scope": None}}})
+        self.assertEqual(self.window.window_5h.get_text(), "≈12 %")
+
+    def test_state_files_copy_of_the_figures_is_ignored_when_the_cache_is_gone(self):
+        # No fallback on purpose: utilization.read() returns None exactly when
+        # the cache cannot be trusted, and state.json's copy came from that same
+        # file -- so it is no more trustworthy than what was just rejected.
+        self.draw(None,
+                  state_limits={"age_s": 0.0, "rows": {
+                      "session": {"pct": 99, "severity": "critical",
+                                  "resets_at": None, "scope": None}}})
+        self.assertEqual(self.window.window_5h.get_text(), "$54.73")
 
     def test_the_colour_comes_from_that_rows_severity(self):
         self.draw(self.figures())
@@ -771,6 +840,13 @@ class LimitRowsOnThePanelTest(TempHome):
         self.assertIn("$54.73 on this machine", tooltip)
         self.assertIn("at least 12 %", tooltip)
         self.assertIn("/usage", tooltip)
+
+    def test_the_tooltips_age_is_the_caches_own_age(self):
+        # The age travels with the figures, so reading them live has to have
+        # brought a live age with it rather than whatever the hook last recorded.
+        self.draw(self.figures(), age_s=7200.0)
+        self.assertIn("figure 2 h 0 min old",
+                      self.window.window_5h.get_tooltip_text())
 
     def test_without_account_figures_the_rows_fall_back_to_dollars(self):
         self.draw(None)
@@ -793,12 +869,94 @@ class LimitRowsOnThePanelTest(TempHome):
                 self.window.week_local.get_style_context().has_class(name), name)
         self.assertIn(self.window.week_local, self.window.usd_values)
 
+    def test_a_stale_state_file_does_not_grey_out_the_percentages(self):
+        # A dead tally hook makes the dollars old. It does not touch the account
+        # figures -- those come from Claude Code's cache, re-read on every poll --
+        # so greying them would claim an age they have not got. What does mute
+        # them is having no figure at all, which the next test covers.
+        self.draw(self.figures(), stale=True)
+        self.assertTrue(
+            self.window.window_5h.get_style_context().has_class("green"))
+        self.assertFalse(
+            self.window.window_5h.get_style_context().has_class("muted"))
+        # The dollar rows beside them do grey out: that is what went stale.
+        self.assertTrue(
+            self.window.week_local.get_style_context().has_class("muted"))
+
+    def test_a_limit_row_with_no_figure_is_muted_even_when_nothing_is_stale(self):
+        # It is showing state.json's dollars at that point, so it mutes for the
+        # same reason the dollar rows do -- draw_limits marks it, not set_stale.
+        self.draw(None)
+        self.assertTrue(
+            self.window.window_5h.get_style_context().has_class("muted"))
+
     def test_a_window_that_has_reset_is_withdrawn_without_a_new_state_file(self):
         # The case that makes draw_limits reachable from the staleness poll: the
         # block turns over while nothing is writing state.json.
         past = datetime.fromtimestamp(time.time() - 60).astimezone().isoformat()
         self.draw(self.figures(resets_at=past))
         self.assertEqual(self.window.window_5h.get_text(), "$54.73")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class LimitPollTest(TempHome):
+    """The poll alone repaints the rows when only the cache has changed.
+
+    Every other test here drives refresh() by hand, which proves what refresh()
+    does and nothing about what calls it. This one runs a real main loop and
+    touches nothing but ~/.claude.json, so the only thing that can have moved the
+    row is the timer -- the whole point of reading the cache live. A /usage
+    reaching the panel within a minute, with no turn in between, rests on exactly
+    this wiring, and a broken timer would otherwise look like a stuck figure.
+
+    The poll is shortened to a second and the loop quits the moment the text
+    moves, so the normal cost is about that; the five-second cap is only there so
+    a genuine break fails instead of hanging the suite.
+    """
+
+    ACCOUNT = "acct-1"
+    CAP_SECONDS = 5
+
+    def write_cache(self, pct):
+        store.write_json_atomic(paths.claude_config_path(), {
+            "oauthAccount": {"accountUuid": self.ACCOUNT},
+            "cachedUsageUtilization": {
+                "accountUuid": self.ACCOUNT,
+                "fetchedAtMs": time.time() * 1000.0,
+                "utilization": {"limits": [
+                    {"kind": "session", "percent": pct, "severity": "normal",
+                     "resets_at": None, "scope": None, "is_active": True}]},
+            },
+        })
+
+    def test_a_cache_change_alone_reaches_the_row(self):
+        store.write_json_atomic(paths.state_path(), {
+            "updated_at": datetime.now().astimezone().isoformat(),
+            "last_turn_usd": 0.0, "session": {"id": "s1", "usd": 1.0},
+            "today_usd": 1.0, "window_5h": {"usd": 1.0},
+            "window_7d": {"usd": 1.0}, "limits": None, "unknown_models": []})
+        self.write_cache(1)
+
+        # Read at construction, so it has to be patched before the window exists.
+        self.enterContext(unittest.mock.patch.object(
+            widget, "STALE_POLL_SECONDS", 1))
+        window = widget.CostMeter()
+        window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(window.destroy)
+        self.assertEqual(window.window_5h.get_text(), "≈1 %")
+
+        # From here state.json is never written again.
+        state_mtime = paths.state_path().stat().st_mtime
+        self.write_cache(5)
+
+        loop = GLib.MainLoop()
+        GLib.timeout_add(100, lambda: loop.quit()
+                         if window.window_5h.get_text() != "≈1 %" else True)
+        GLib.timeout_add_seconds(self.CAP_SECONDS, loop.quit)
+        loop.run()
+
+        self.assertEqual(window.window_5h.get_text(), "≈5 %")
+        self.assertEqual(paths.state_path().stat().st_mtime, state_mtime)
 
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")

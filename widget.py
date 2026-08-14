@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Always-on-top cost meter, anchored bottom-right.
 
-Reads data/state.json and nothing else. Run it through run_widget.sh or
+Reads data/state.json for the dollar figures and Claude Code's own usage cache
+for the account's limit percentages — the latter directly, so a five-hour block
+that resets between turns is noticed. Run it through run_widget.sh or
 run_widget.cmd, which enter the pixi environment; on Linux that sets
 GDK_BACKEND=x11 so the window can place and raise itself.
 """
@@ -300,14 +302,16 @@ def window_row(window, limit, now=None):
     the arithmetic the old calibrated percentage was doing wrongly. The dollars
     move to the tooltip, which has the room to say which is which.
 
-    The percentage is always marked `≥`. The figure is re-asked of the server when
-    a session starts and when the user runs /usage, and at no other time, so it is
-    usually hours old — and usage within a window only grows, which makes it a
-    floor rather than a reading. Unconditional, because a marker that came and
-    went would imply the unmarked form is exact, and it never is: even a
-    twelve-second-old figure has had twelve seconds to rise. This is the `~`
-    marker's replacement and it claims something stronger — `~` admitted the
-    number could be wrong in either direction.
+    The percentage is always marked `≈`, and unconditionally: the figure is
+    re-asked of the server when a session starts and when the user runs /usage,
+    and at no other time, so even a twelve-second-old one has had twelve seconds
+    to rise. A marker that came and went would imply the unmarked form is exact,
+    and it never is.
+
+    `≈` replaced `≥` on request. `≥` was the stronger claim — usage within a
+    window only grows, so the figure really is a floor — but it reads as a
+    comparison rather than as a hedge, and this row is a hedge. The tooltip is
+    where the floor is still stated exactly ("account at least 17 %").
 
     The reset time rides with the percentage, as it always has: what it is for is
     saying which window the figure describes. Once that time has passed the row is
@@ -323,7 +327,7 @@ def window_row(window, limit, now=None):
         return _fmt_usd(window.get("usd")), "muted"
     resets = _fmt_reset(limit.get("resets_at"), now)
     tail = "" if resets is None else f" · {resets}"
-    return f"≥{pct} %{tail}", severity_class(limit.get("severity"), pct)
+    return f"≈{pct} %{tail}", severity_class(limit.get("severity"), pct)
 
 
 def window_tooltip(window, limit, age_s, now=None):
@@ -481,13 +485,14 @@ class CostMeter(Gtk.Window):
         # API billing, notional against a seat.
         grid.attach(Gtk.Separator(), 0, 7, 2, 1)
         self.billing = _row(grid, 8, "billing", self.labels)
-        # Split because `muted` has two owners: staleness for every value row, and
-        # draw_limits for the two window rows when there is no account figure.
-        # The billing row rides with the plain ones — it is drawn once from
-        # state.json and only staleness ever mutes it.
+        # The rows made of state.json's dollars, and so the rows staleness mutes.
+        # The two limit rows are deliberately absent — see set_stale: they come
+        # from Claude Code's cache instead, and `muted` reaches them only through
+        # draw_limits, when there is no account figure and they are showing
+        # dollars after all. The billing row rides with the plain ones: it is
+        # drawn once from state.json and only staleness ever mutes it.
         self.usd_values = (self.last_turn, self.session, self.today,
                            self.week_local, self.billing)
-        self.window_values = (self.window_5h, self.window_7d)
         self.rows = {"last_turn": self.last_turn,
                      "session": self.session, "today": self.today,
                      "week_local": self.week_local,
@@ -517,7 +522,11 @@ class CostMeter(Gtk.Window):
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
         self.warning.set_no_show_all(True)
-        grid.attach(self.warning, 0, 8, 2, 1)
+        # Row 9, below `billing` on row 8: the two shared row 8 and GTK drew them
+        # on top of each other, so the red staleness note sat over the billing
+        # text. Every row index here is literal, so a row added above has to push
+        # this one down with it.
+        grid.attach(self.warning, 0, 9, 2, 1)
 
         # After every label exists, since this is what sizes them.
         self.apply_scale(self.scale)
@@ -716,6 +725,28 @@ class CostMeter(Gtk.Window):
         )
         self.monitor.connect("changed", lambda *_: self.refresh())
 
+    @staticmethod
+    def read_limits():
+        """The account's limit figures, read live rather than from state.json.
+
+        state.json carries a copy, but the tally hook writes it, so it only moves
+        when a turn lands. The cache behind it moves on Claude Code's schedule
+        instead — a session starting, a /usage — and a five-hour block resets on
+        nobody's schedule at all. Between turns that left the 5h row showing
+        dollars for a window that had already turned over, while a live
+        percentage for the new block sat on disk unread. This is what closes that
+        gap: the 60-second poll calls refresh(), so a new figure is up within a
+        minute of appearing, turn or no turn.
+
+        Sole source, with no fallback to state.json's copy: utilization.read()
+        returns None exactly when the cache cannot be trusted — missing, another
+        account's, past the sanity cap — and state.json's copy came from that
+        same file. Falling back to it would put up a figure that was just judged
+        untrustworthy. `{}` then means no account figure, which draw_limits and
+        window_row already read as "show the dollars, muted".
+        """
+        return utilization.read() or {}
+
     def refresh(self):
         state = store.read_json(paths.state_path(), default=None)
         if not state:
@@ -738,7 +769,8 @@ class CostMeter(Gtk.Window):
 
         for key in WINDOW_KEYS:
             self.windows[key] = state.get(key) or {}
-        self.limits = state.get("limits") or {}
+        # Live from Claude Code's cache, not from `state` — see read_limits.
+        self.limits = self.read_limits()
         rolling = self.roll.retarget({
             "session": (state.get("session") or {}).get("usd"),
             "today": state.get("today_usd"),
@@ -811,11 +843,24 @@ class CostMeter(Gtk.Window):
         return False
 
     def set_stale(self, stale):
-        """Mute every value row while the state is stale.
+        """Mute the dollar rows while the state is stale.
 
         Muting rather than hiding or zeroing: the last known figures are still
         the best information available, they just stop being presented as
         current. The warning row carries the age.
+
+        The dollar rows only, because staleness here means one thing: the tally
+        hook has stopped rewriting state.json. That is exactly what those rows
+        are made of. The limit rows are not — read_limits goes to Claude Code's
+        cache on every poll, so a dead hook does not make a percentage any older
+        than it was, and grey would be claiming it did. They keep their colour,
+        and their own freshness is answered where it belongs: the cache's age in
+        the tooltip, and withdrawal on `resets_at` when the window is gone.
+
+        Nothing here has to mute them for the dollar fallback either. A limit row
+        with no account figure is showing state.json's dollars, and draw_limits
+        has already marked it `muted` for that reason — the same class, arrived
+        at from the row's own source rather than from this flag.
         """
         for label in self.usd_values:
             context = label.get_style_context()
@@ -823,15 +868,6 @@ class CostMeter(Gtk.Window):
                 context.add_class("muted")
             else:
                 context.remove_class("muted")
-        if stale:
-            for label in self.window_values:
-                context = label.get_style_context()
-                # The colour classes are declared after `muted` in the CSS, so
-                # they would win the cascade and a stale limit row would still
-                # read confidently green or red. Drop the colour to mute it.
-                for name in LIMIT_CLASSES:
-                    context.remove_class(name)
-                context.add_class("muted")
         # When fresh, the window rows are left alone: draw_limits has already set
         # or cleared their `muted` for the no-account-figure case, and clearing it
         # here would present a bare dollar figure as an account percentage.

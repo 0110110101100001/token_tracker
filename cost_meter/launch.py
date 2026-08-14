@@ -6,7 +6,7 @@ Two callers, and the difference between them is the whole shape of this module:
 - The **SessionStart hook**, through launch_widget.sh / launch_widget.cmd or
   `pixi run --frozen launch`. It obeys a paused auto-launch and speaks only to
   the log.
-- **A human**, through `pixi run show`, which passes `--force`. Pausing is a
+- **A human**, through `pixi run start`, which passes `--force`. Pausing is a
   statement about what *sessions* do, so somebody typing a command overrides it
   without changing it — and gets told what happened, on stdout.
 
@@ -170,7 +170,7 @@ def build_parser():
     parser.add_argument("--force", action="store_true",
                         help="open the panel even when auto-launch is paused, "
                              "and report the outcome on stdout. What "
-                             "`pixi run show` passes; the hook never does.")
+                             "`pixi run start` passes; the hook never does.")
     return parser
 
 

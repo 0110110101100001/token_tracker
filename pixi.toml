@@ -61,7 +61,14 @@ launch = "python -m cost_meter.launch"
 # outlives the shell that ran it. `pixi run widget` is the foreground
 # equivalent. The flag lives here rather than in the user's fingers: there is no
 # bare `--` to remember and no way to typo it into silently doing nothing.
-show = "python -m cost_meter.launch --force"
+#
+# This is the one to reach for by hand, so it has the name a hand reaches for.
+start = "python -m cost_meter.launch --force"
+
+# The name this task had until 2026-08-14, kept as an alias rather than deleted:
+# it is in the README's history and in a plan under docs/, and a command that
+# used to work should not start reporting itself as unknown.
+show = { depends-on = ["start"] }
 
 # Whether a new Claude Code session may open the panel. Pass flags after a bare
 # `--` so pixi does not read them as its own:

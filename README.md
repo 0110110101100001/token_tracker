@@ -71,11 +71,11 @@ the server for them and caches the answer in `~/.claude.json`, and the panel rea
 it from there. No calibration, and nothing to redo when your plan changes or a
 promotion moves the ceiling.
 
-**`≥` is not hedging.** Claude Code re-asks the server when a session starts and
-when you run `/usage`, and at no other time, so the figure on the row is usually
-hours old. Usage within a window only ever grows, which makes an old percentage a
-floor rather than a guess: `≥17 %` means at least 17 %, never less. Run `/usage`
-when you want a fresh one.
+**`≈` marks a floor, not a guess.** Claude Code re-asks the server when a session
+starts and when you run `/usage`, and at no other time, so the figure on the row
+is usually hours old. Usage within a window only ever grows, so `≈17 %` means at
+least 17 %, never less — the tooltip says so in words. Run `/usage` when you want
+a fresh one.
 
 Hover either row for what this machine spent in that window, how old the account
 figure is, and the reset time in full.
@@ -109,7 +109,7 @@ screen stays up; pausing is a statement about the next session, not this one.
 **To open the panel while it stays paused:**
 
 ```bash
-pixi run show
+pixi run start
 ```
 
 That is the command for exactly this: it opens a panel whatever the flag says,
@@ -124,7 +124,7 @@ prints nothing whether it worked or not.
 automatic launch — the hook runs that exact command — so it obeys the flag and
 logs `launch: paused` rather than starting a panel, silently, as anything on a
 session's critical path must. If you reach for it by hand while paused, nothing
-happens and nothing says so; that is what `show` exists to avoid.
+happens and nothing says so; that is what `start` exists to avoid.
 
 `pixi run widget` (foreground) and `./run_widget.sh` (`run_widget.cmd` on
 Windows) also still work, and both ignore the pause too. They differ from `show`
@@ -164,7 +164,7 @@ Worth reading before you trust a figure on the panel.
   from the server, so they cover every machine, claude.ai and the phone alike —
   the machine boundary above does not apply to them. What they carry instead is
   age: the figure was true when Claude Code last asked, and usage since then has
-  only pushed it up, which is why the row says `≥`.
+  only pushed it up, which is why the row says `≈`.
 
 The two scopes are deliberately never mixed on one row. A dollar figure beside a
 percentage reads as one claim, and dividing one by the other is exactly the
@@ -187,10 +187,10 @@ your screen. It shows these rows:
 - **today** — USD cost since local midnight
 - *(separator)*
 - **5h window** — how much of the account's 5-hour limit is used, as a floor:
-  `≥12 % · 18:30`, where `18:30` is the clock time that block resets. Hover for
+  `≈12 % · 18:30`, where `18:30` is the clock time that block resets. Hover for
   what this machine spent in the block. `$54.73` alone means no account figure was
   available.
-- **week** — the same for the weekly limit: `≥17 % · Sat 02:59`. The weekday
+- **week** — the same for the weekly limit: `≈17 % · Sat 02:59`. The weekday
   appears because that reset is days out, where a bare `02:59` would read as
   tonight.
 - **this machine** — USD this installation put into that same week: `$767.24`.
@@ -227,13 +227,19 @@ which no hardcoded number would follow.
 One more row appears only when needed. It carries two kinds of warning:
 
 - `! stale 1 h 37 min` — `state.json` has not been rewritten for over ten
-  minutes, so the figures above it are that old. Every value row is greyed
-  out at the same time, including the limit rows, which lose their
-  green/amber/red colour. This is what a broken `Stop` hook looks like: the
-  hook always exits 0 by design, so without this marker the panel would keep
-  showing hours-old numbers as though they were current. It also shows up
-  after a genuinely idle stretch, which is honest — the numbers really are
-  ten minutes old.
+  minutes, so the **dollar** figures are that old, and every dollar row greys
+  out with the marker. This is what a broken `Stop` hook looks like: the hook
+  always exits 0 by design, so without this marker the panel would keep showing
+  hours-old numbers as though they were current. It also shows up after a
+  genuinely idle stretch, which is honest — the numbers really are ten minutes
+  old.
+
+  **The limit rows keep their colour**, because nothing about them went stale:
+  they are re-read from Claude Code's cache every 60 seconds, so a dead hook
+  does not age a percentage by a second. Their own freshness is answered
+  separately — the cache's age is in the tooltip, and a row whose window has
+  reset is withdrawn outright. A limit row does grey out when there is no
+  account figure at all, but then it is showing dollars like the rest.
 - `? claude-something` — a model with no entry in `pricing.json`, so an
   unpriced model is visible instead of silently costing nothing.
 
@@ -301,12 +307,12 @@ moves: only the figure changes.
 
 What deliberately does **not** roll:
 
-- **the two limit rows.** There is nothing to tween between `≥11 %` and `≥12 %`,
+- **the two limit rows.** There is nothing to tween between `≈11 %` and `≈12 %`,
   and the figure behind them changes at most every few hours rather than every
   turn. They are repainted when the state changes and left alone in between.
-- **anything, while the state is stale.** Stale figures are not being presented
-  as current, and rolling them would say the opposite. They land on their last
-  known values and stay put.
+- **any dollar row, while the state is stale.** Stale figures are not being
+  presented as current, and rolling them would say the opposite. They land on
+  their last known values and stay put.
 - **the first paint.** Startup is not a change, and rolling up from zero would
   claim one that never happened.
 
@@ -426,10 +432,12 @@ failing visibly. After editing `pixi.toml`, run `pixi install`.
 Start the panel by hand:
 
 ```bash
-pixi run show         # detached, whatever auto-launch is set to — the usual one
+pixi run start        # detached, whatever auto-launch is set to — the usual one
 pixi run widget       # in the foreground
 pixi run launch       # detached, but obeys a paused auto-launch and stays silent
 ```
+
+`pixi run show` is the old name for `start` and still works.
 
 On Linux `pixi run widget` is also how you see the panel's errors. On Windows it
 is not — the task runs `pythonw`, which has nowhere to write them (see below);
@@ -535,6 +543,15 @@ confidently wrong:
   Claude Code's own one-hour threshold — it discards a figure it can re-fetch on
   demand, and the panel cannot ask for one.
 
+**The panel reads that cache itself**, on its own 60-second poll, rather than
+waiting for the copy the hook writes into `state.json` — which only moves when a
+turn lands. Two things move without a turn: Claude Code refreshing the cache when
+a session starts, and a 5-hour block resetting. Read through `state.json` alone,
+both went unseen, so a block that turned over at lunchtime left the 5h row
+showing dollars all afternoon while a live percentage for the new block sat on
+disk unread. The copy in `state.json` is still written — `tally` needs the reset
+times to anchor the dollar windows — and the panel deliberately ignores it.
+
 The previous design derived these percentages instead, by dividing locally
 recorded spend by a ceiling you calibrated against a `/usage` reading. That is
 gone, and so are `pixi run calibrate` and `pixi run limit`. It had two failures
@@ -588,7 +605,7 @@ your spend.
 - **The limit percentages are as fresh as your last `/usage`.** Claude Code
   re-asks the server at session start and when you run `/usage`, and nothing the
   panel does can trigger a refresh. So the figure is usually hours old. It is
-  shown anyway, marked `≥`, because usage within a window only grows and an old
+  shown anyway, marked `≈`, because usage within a window only grows and an old
   percentage is a genuine floor — but it is a floor, not a reading, and the gap
   between them is however much you have spent since.
 - **USD here is an API-equivalent, not an invoice** — on a seat. The dollar
@@ -628,8 +645,8 @@ your spend.
   are ignored. They are zero across every transcript on the machine this was
   built for.
 - **`/usage` and the panel now agree by construction**, because they read the
-  same figures. When they disagree, the panel's are older — run `/usage` and they
-  will match again.
+  same file, and the panel re-reads it every 60 seconds — so a `/usage` reaches
+  the rows within a minute, without waiting for a turn.
 
 ## Files
 
@@ -638,10 +655,11 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
 
 - `events.jsonl` — append-only ledger of priced messages, pruned to the
   trailing 8 days.
-- `state.json` — the numbers the widget actually reads and displays: the dollar
-  figures, the account's limit rows under `limits` (with the age of the cache they
-  came from), and the `billing` mode the hook observed in its own session's
-  environment.
+- `state.json` — the dollar figures the widget displays, the `billing` mode the
+  hook observed in its own session's environment, and a copy of the account's
+  limit rows under `limits` (with the age of the cache they came from). The
+  widget does not read that copy — it goes to `~/.claude.json` for a live one;
+  `tally` keeps it because the reset times in it anchor the dollar windows.
 - `offsets.json` — per-transcript file read positions, so re-running the
   scan never re-reads or double-counts a line.
 - `session_marks.json` — one bookmark per session recording the newest event
@@ -693,9 +711,10 @@ platforms run the same check rather than a pair of twins that can drift.
 
 ## Troubleshooting
 
-- **The widget stops updating** — the panel says so itself: every value row
+- **The widget stops updating** — the panel says so itself: every dollar row
   greys out and the warning row shows how long it has been (`! stale 1 h
-  37 min`). Check `data/cost-meter.log`. Every fault on the `Stop` hook's
+  37 min`). The limit percentages carry on regardless; they do not come from the
+  hook. Check `data/cost-meter.log`. Every fault on the `Stop` hook's
   critical path is caught and logged there rather than shown, by design, so a
   stuck panel almost always has a line waiting there. If the log is empty, the
   hook is not reaching Python at all: run `hooks/tally.sh` (or `hooks\tally.cmd`)
