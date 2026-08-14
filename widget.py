@@ -11,6 +11,7 @@ GDK_BACKEND=x11 so the window can place and raise itself.
 import argparse
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -23,7 +24,8 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from cost_meter import autolaunch, paths, roll, store, summary, utilization  # noqa: E402
+from cost_meter import (autolaunch, paths, roll, store, summary,  # noqa: E402
+                        usage_api, utilization)
 
 MARGIN = 24
 WIDTH = 240
@@ -54,6 +56,24 @@ LIMIT_CLASSES = ("green", "amber", "red")
 # writing would never trigger a redraw — which is exactly the case the staleness
 # row exists to report. This timer is the only thing that notices.
 STALE_POLL_SECONDS = 60
+# How often the panel asks the server for the account's limits itself, through
+# cost_meter/usage_api.py. Claude Code asks on a session start and on a `/usage`
+# and at no other time, which left the two percentages standing still for hours;
+# this is what makes them move on their own.
+#
+# A minute is the endpoint's pace rather than a preference. Measured on
+# 2026-08-14: polling every five seconds was refused with `429 Retry-After: 196`
+# after the first answer, while a minute was answered `200` every time it was
+# tried — and Claude Code throttles its own cache writes to five minutes, which
+# reads like the same server-side rule seen from the other side. A whole
+# percentage point of a five-hour window is minutes of heavy work anyway, so this
+# is not the limit on how fast the rows can move.
+#
+# Overridable per machine with `usage_poll_seconds` in config.json, where 0 turns
+# the fetch off and leaves the rows reading Claude Code's cache, as they did
+# before. Going lower is allowed and will meet the 429; the backoff obeys the
+# Retry-After it comes with, so the cost is stale rows, not a hammered endpoint.
+USAGE_POLL_SECONDS = 60
 
 # The rolling figures. Every row tweens to its new value instead of snapping to
 # it, so a turn that cost $4 and one that cost $0.04 stop looking identical.
@@ -126,6 +146,27 @@ def font_attrs(px):
 
 def clamp_scale(scale):
     return min(MAX_SCALE, max(MIN_SCALE, scale))
+
+
+def usage_interval(config):
+    """Seconds between our own reads of the account's limits. 0 turns them off.
+
+    Validated for the reason saved_scale() is: config.json is a file a user can
+    edit by hand, and this value decides how often something leaves the machine.
+    A nonsense one must not become either a tight loop against the endpoint or a
+    silent end to the polling the rows' freshness now depends on, so anything that
+    is not a number at or above zero falls back to the default.
+
+    Zero survives untouched because it is the off switch. Anything else is at
+    least a second, since GLib counts this timer in whole seconds and rounding a
+    fraction down would land on the off switch by accident.
+    """
+    value = (config or {}).get("usage_poll_seconds", USAGE_POLL_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return USAGE_POLL_SECONDS
+    if value == 0:
+        return 0
+    return max(1, round(value))
 
 
 def width_for_scale(scale):
@@ -531,10 +572,36 @@ class CostMeter(Gtk.Window):
         # After every label exists, since this is what sizes them.
         self.apply_scale(self.scale)
 
+        # Our own read of the account's limits. `usage_wait` is how long the
+        # backoff is currently holding off after a failure and `usage_next` the
+        # monotonic time it may resume at; `usage_busy` keeps one request in
+        # flight, because a timer that fired while the last request was still
+        # waiting on a timeout would stack threads.
+        self.usage_seconds = self.saved_usage_interval()
+        self.usage_busy = False
+        self.usage_wait = 0.0
+        self.usage_next = 0.0
+
+        # Both timers, so destroying the panel can take them with it. A GLib
+        # timeout belongs to the main context rather than to the widget that
+        # registered it, so without this a destroyed panel keeps waking up and
+        # keeps polling the endpoint — invisible where a panel outlives the
+        # process, and not invisible in a process that builds a second one.
+        self.alive = True
+        self.sources = []
+
         self.watch()
         self.refresh()  # before place(), so the first anchor sees real content
         self.place()
-        GLib.timeout_add_seconds(STALE_POLL_SECONDS, self.refresh)
+        self.connect("destroy", self.stop_timers)
+        self.sources.append(
+            GLib.timeout_add_seconds(STALE_POLL_SECONDS, self.refresh))
+        if self.usage_seconds:
+            # One interval after startup rather than at it, deliberately:
+            # `--selftest` builds a real panel, and a smoke test must not reach
+            # the network. The rows have Claude Code's cache to show meanwhile.
+            self.sources.append(
+                GLib.timeout_add_seconds(self.usage_seconds, self.poll_usage))
 
     @staticmethod
     def saved_scale():
@@ -550,6 +617,15 @@ class CostMeter(Gtk.Window):
             return clamp_scale(float(config.get("widget_scale") or 1.0))
         except (TypeError, ValueError):
             return 1.0
+
+    @staticmethod
+    def saved_usage_interval():
+        """How often to ask the server ourselves, from config.json.
+
+        Read once at construction, like the scale: changing how often a panel
+        polls is a restart, not something to re-read on every tick.
+        """
+        return usage_interval(store.read_json(paths.config_path(), default={}) or {})
 
     def apply_scale(self, scale):
         """Resize the whole panel to `scale`: text, spacings and window.
@@ -767,6 +843,80 @@ class CostMeter(Gtk.Window):
         window_row already read as "show the dollars, muted".
         """
         return utilization.read() or {}
+
+    def stop_timers(self, *_):
+        """Let the panel's timers die with the window.
+
+        `alive` covers what source_remove cannot: a fetch already in flight on a
+        worker thread will still come back through idle_add, and it must find a
+        window that says it is gone rather than repaint a destroyed one.
+        """
+        self.alive = False
+        for source in self.sources:
+            GLib.source_remove(source)
+        self.sources = []
+
+    def poll_usage(self):
+        """Ask the server for the account's limits, off the main loop.
+
+        The request goes to a worker thread because it is a network read with a
+        ten-second timeout on it, and the main loop is what draws the panel: a
+        blocking call here would freeze the window, drag included, for as long as
+        the endpoint took to answer.
+
+        Two guards, both for the same failure. `usage_busy` skips a tick whose
+        predecessor is still waiting, so a slow endpoint cannot stack a thread
+        every interval, and `usage_next` is the failure backoff — set in
+        usage_fetched, checked here rather than by rescheduling the timer, so the
+        interval itself stays the one thing that decides the poll's rate.
+        """
+        if not self.alive:
+            return False
+        if self.usage_busy or time.monotonic() < self.usage_next:
+            return True
+        self.usage_busy = True
+        threading.Thread(target=self._fetch_usage, daemon=True).start()
+        return True
+
+    def _fetch_usage(self):
+        """The worker thread's whole job: fetch, then hand back to the main loop.
+
+        Nothing here touches a widget. GTK is not thread-safe, so the answer
+        crosses back through GLib.idle_add and every repaint happens where every
+        other repaint happens.
+        """
+        ok, retry_after = usage_api.refresh()
+        GLib.idle_add(self.usage_fetched, ok, retry_after)
+
+    def usage_fetched(self, ok, retry_after=None):
+        """Take the worker's answer on the main loop. Returns False: one shot.
+
+        A fresh figure is repainted through refresh() like any other, since
+        read_limits goes to whichever source is newer and neither the rows nor
+        their marker care which one that was.
+
+        A failure paints nothing. The previous figure is still the best available
+        and is still a floor, so the only thing that changes is when we next ask:
+        the backoff doubles, which is what keeps a moved endpoint or a closed
+        laptop from being asked every few seconds all day.
+
+        `retry_after` is a wait the server itself asked for, and it wins over the
+        backoff whenever it is longer. An early backoff step is a few seconds; a
+        rate-limited endpoint means it for minutes, and asking again before then
+        would earn nothing but another refusal.
+        """
+        self.usage_busy = False
+        if not self.alive:
+            return False
+        if ok:
+            self.usage_wait = 0.0
+            self.usage_next = 0.0
+            self.refresh()
+        else:
+            wait = usage_api.backoff_seconds(self.usage_wait, self.usage_seconds)
+            self.usage_wait = max(wait, retry_after or 0.0)
+            self.usage_next = time.monotonic() + self.usage_wait
+        return False
 
     def refresh(self):
         state = store.read_json(paths.state_path(), default=None)

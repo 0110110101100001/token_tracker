@@ -66,16 +66,24 @@ What the installer writes, and why the hook paths look the way they do, is in
 ## Limit percentages
 
 There is nothing to set up. The **5h window** and **week** rows show the
-account's own figures — the same ones `/usage` prints — because Claude Code asks
-the server for them and caches the answer in `~/.claude.json`, and the panel reads
-it from there. No calibration, and nothing to redo when your plan changes or a
-promotion moves the ceiling.
+account's own figures — the same ones `/usage` prints — and the panel asks the
+server for them itself, **once a minute**. No calibration, and nothing to redo
+when your plan changes or a promotion moves the ceiling.
 
-**`≈` marks a floor, not a guess.** Claude Code re-asks the server when a session
-starts and when you run `/usage`, and at no other time, so the figure on the row
-is usually hours old. Usage within a window only ever grows, so `≈17 %` means at
-least 17 %, never less — the tooltip says so in words. Run `/usage` when you want
-a fresh one.
+A minute is the endpoint's pace rather than a setting worth tuning: five-second
+polling is refused outright (`429`, with a three-minute cool-off attached), and a
+whole percentage point of a five-hour window is minutes of heavy work anyway. To
+change it, or to stop the panel talking to the network at all, put
+`usage_poll_seconds` in `data/config.json` — seconds, or `0` for off. With it off
+the rows fall back to whatever Claude Code last cached, which is what they used to
+show.
+
+**`≈` marks a floor, not a guess.** The figure was true when it was fetched, and
+usage within a window only ever grows, so `≈17 %` means at least 17 %, never less —
+the tooltip says so in words. The marker stays on a figure that is seconds old,
+because the unmarked form would be claiming an exactness it never has: the
+percentage is a whole number, the window is still filling while you read it, and
+one refused request puts the row back on Claude Code's older cache.
 
 Hover either row for what this machine spent in that window, how old the account
 figure is, and the reset time in full.
@@ -163,8 +171,9 @@ Worth reading before you trust a figure on the panel.
 - **The limit percentages are the account's, and they are floors.** They come
   from the server, so they cover every machine, claude.ai and the phone alike —
   the machine boundary above does not apply to them. What they carry instead is
-  age: the figure was true when Claude Code last asked, and usage since then has
-  only pushed it up, which is why the row says `≈`.
+  age: usually a minute of it, and hours whenever the panel cannot reach the
+  network, since usage since the fetch only pushes them up. That is why the row
+  says `≈`.
 
 The two scopes are deliberately never mixed on one row. A dollar figure beside a
 percentage reads as one claim, and dividing one by the other is exactly the
@@ -235,11 +244,11 @@ One more row appears only when needed. It carries two kinds of warning:
   old.
 
   **The limit rows keep their colour**, because nothing about them went stale:
-  they are re-read from Claude Code's cache, which the panel watches directly, so
-  a dead hook does not age a percentage by a second. Their own freshness is answered
-  separately — the cache's age is in the tooltip, and a row whose window has
-  reset is withdrawn outright. A limit row does grey out when there is no
-  account figure at all, but then it is showing dollars like the rest.
+  they come from the server on the panel's own poll, so a dead hook does not age a
+  percentage by a second. Their own freshness is answered separately — the age is
+  in the tooltip, and a row whose window has reset is withdrawn outright. A limit
+  row does grey out when there is no account figure at all, but then it is showing
+  dollars like the rest.
 - `? claude-something` — a model with no entry in `pricing.json`, so an
   unpriced model is visible instead of silently costing nothing.
 
@@ -307,9 +316,9 @@ moves: only the figure changes.
 
 What deliberately does **not** roll:
 
-- **the two limit rows.** There is nothing to tween between `≈11 %` and `≈12 %`,
-  and the figure behind them changes at most every few hours rather than every
-  turn. They are repainted when the state changes and left alone in between.
+- **the two limit rows.** There is nothing to tween between `≈11 %` and `≈12 %`:
+  the server reports whole percentages, so the row steps however often it is
+  fetched. They are repainted when the figure changes and left alone in between.
 - **any dollar row, while the state is stale.** Stale figures are not being
   presented as current, and rolling them would say the opposite. They land on
   their last known values and stay put.
@@ -518,21 +527,43 @@ it must be given one that ends rather than a terminal it will wait on.
 
 ## Where the limit figures come from
 
-Claude Code asks the server how much of each limit the **account** has used, and
-caches the answer in `~/.claude.json` under `cachedUsageUtilization`. That is the
-panel's whole source for the two limit rows: percentages, reset times and the
-severity that colours them. The commands are up top, under
-[Limit percentages](#limit-percentages) — there are none, which is the point.
+How much of each limit the **account** has used is a fact only the server has, and
+two things ask it for the panel:
 
-**Nothing here reaches the network**, and no credential is read. The cache is a
-side effect of Claude Code running; the panel only reads the file.
+- **the panel itself**, once a minute, with `GET /api/oauth/usage` — the request
+  Claude Code makes internally (its bundle calls it `fetchUtilization`), using the
+  subscription token Claude Code already keeps in `~/.claude/.credentials.json`.
+  The answer lands in `data/usage.json`.
+- **Claude Code**, which asks on a session start and when you run `/usage`, and
+  caches its answer in `~/.claude.json` under `cachedUsageUtilization`.
+
+Both files carry the same shape, and the panel reads whichever was fetched more
+recently. So the second is a fallback rather than a redundancy: with the poll
+turned off, after a suspend, or while the network is unreachable, Claude Code's
+cache is the fresher of the two and the rows quietly come from there.
+
+**This is the one part of the tool that opens a socket**, and it is a read: one
+GET, no query, nothing about your machine in it. The token is read on every fetch
+because Claude Code rewrites that file whenever it refreshes it — and it is only
+ever read. Nothing here writes credentials, nothing logs a token, and the
+`refreshToken` sitting beside it is deliberately never used: refreshing may rotate
+it, and rotating it behind Claude Code's back could log you out of the tool this
+panel exists to measure. An expired token simply means the fetch is skipped.
+
+**The endpoint is undocumented and may change without notice.** That is why every
+failure ends in the behaviour the panel had before it: nothing written, no error on
+screen, and rows reading Claude Code's cache. It is also rate-limited — five-second
+polling earned `429 Retry-After: 196` — so a refusal is obeyed for exactly as long
+as it asks, and other failures back off by doubling, up to ten minutes. `data/cost-meter.log`
+records each failed fetch, which is where an endpoint that has moved for good shows up.
 
 Three things are checked before a figure is shown, each for a way it could be
 confidently wrong:
 
-- **The account.** The cache records which account it describes. After logging in
-  as somebody else the old figures would otherwise be presented as the new
-  account's; on a mismatch they are dropped. Claude Code makes the same check.
+- **The account.** Each file records which account it describes — Claude Code
+  stamps its cache, and the panel stamps what it fetches. After logging in as
+  somebody else the old figures would otherwise be presented as the new account's;
+  on a mismatch they are dropped. Claude Code makes the same check.
 - **The window.** Each row carries its own reset time, and once that has passed
   the figure describes a window that no longer exists. Age cannot detect this — a
   four-hour-old weekly figure is fine, a twenty-minute-old 5-hour figure is
@@ -540,25 +571,30 @@ confidently wrong:
   decides.
 - **Sanity.** Past a week the figure is refused outright: the weekly window has
   certainly reset by then, so no floor survives it. This is deliberately *not*
-  Claude Code's own one-hour threshold — it discards a figure it can re-fetch on
-  demand, and the panel cannot ask for one.
+  Claude Code's own one-hour threshold — it discards a figure it can re-fetch at
+  will, and the panel's own fetch may be the thing that is failing.
 
-**The panel reads that cache itself**, rather than waiting for the copy the hook
-writes into `state.json` — which only moves when a turn lands. Two things move
-without a turn: Claude Code refreshing the cache when a session starts or you run
-`/usage`, and a 5-hour block resetting. Read through `state.json` alone, both
-went unseen, so a block that turned over at lunchtime left the 5h row showing
-dollars all afternoon while a live percentage for the new block sat on disk
-unread. The copy in `state.json` is still written — `tally` needs the reset times
-to anchor the dollar windows — and the panel deliberately ignores it.
+**A 5-hour block turning over mid-session used to leave the row on dollars until
+the next `/usage`.** The old percentage is withdrawn the moment its window ends,
+correctly — it describes a window that is gone — and the new window's percentage
+was a fact only the server had, which nothing asked it for until a session started
+or you typed `/usage`. So a block that turned over at lunchtime could leave the 5h
+row showing dollars all afternoon. The panel's own poll is what closes that: the
+new window's figure arrives within the minute, unasked.
 
-Two things bring a new figure to the row, and they cover different failures. A
-**file monitor** on the cache repaints the moment it is written, which is what
-matters after a `/usage`: the panel is usually right beside the output you are
-comparing it against, and a minute's disagreement there reads as a broken panel.
-The **60-second poll** catches what no file change announces — a window reaching
-its `resets_at`, where the row has to be withdrawn with nothing having been
-written anywhere.
+**The panel reads both files itself**, rather than the copy the hook writes into
+`state.json` — which only moves when a turn lands, and the things that move a
+percentage have nothing to do with turns. The copy is still written, because
+`tally` needs the reset times to anchor the dollar windows; the panel deliberately
+ignores it.
+
+Three things bring a new figure to the row, and they cover different failures.
+The **once-a-minute fetch** is the ordinary one. A **file monitor** on Claude
+Code's cache repaints the moment that file is written, which matters after a
+`/usage`: the panel is usually right beside the output you are comparing it
+against. The **60-second staleness poll** catches what no file change announces —
+a window reaching its `resets_at`, where the row has to be withdrawn with nothing
+having been written anywhere.
 
 The previous design derived these percentages instead, by dividing locally
 recorded spend by a ceiling you calibrated against a `/usage` reading. That is
@@ -610,12 +646,18 @@ your spend.
   deliberately no shared store, because merging ledgers across machines means
   reconciling clocks and de-duplicating sessions, which is a much larger tool than
   this one. The limit rows are unaffected: they come from the account.
-- **The limit percentages are as fresh as your last `/usage`.** Claude Code
-  re-asks the server at session start and when you run `/usage`, and nothing the
-  panel does can trigger a refresh. So the figure is usually hours old. It is
-  shown anyway, marked `≈`, because usage within a window only grows and an old
-  percentage is a genuine floor — but it is a floor, not a reading, and the gap
-  between them is however much you have spent since.
+- **The limit percentages are a minute old, and depend on an undocumented
+  endpoint.** The panel fetches them itself once a minute; when that fails —
+  offline, an expired token, a rate limit, or the endpoint changing — it falls
+  silently back to whatever Claude Code last cached, which can be hours old with
+  nothing on the row to distinguish the two cases. The `≈` covers both, because
+  usage within a window only grows and an old percentage is still a genuine floor.
+  The age is in the tooltip when you want to know which case you are in, and
+  `data/cost-meter.log` names the failure.
+- **A whole percentage point is the finest the server reports.** The figures arrive
+  as integers, so the rows step rather than glide however often they are fetched,
+  and the two limit rows are deliberately left out of the panel's rolling
+  animation for that reason.
 - **USD here is an API-equivalent, not an invoice** — on a seat. The dollar
   figures are then a consistent way to compare and weight usage, not a bill you
   will actually receive. The **billing** row says which case you are in, but it
@@ -665,9 +707,13 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   trailing 8 days.
 - `state.json` — the dollar figures the widget displays, the `billing` mode the
   hook observed in its own session's environment, and a copy of the account's
-  limit rows under `limits` (with the age of the cache they came from). The
-  widget does not read that copy — it goes to `~/.claude.json` for a live one;
+  limit rows under `limits` (with the age of the figures they came from). The
+  widget does not read that copy — it goes to the two live sources below;
   `tally` keeps it because the reset times in it anchor the dollar windows.
+- `usage.json` — the account's limit percentages as the panel last fetched them
+  from the server, in the same shape Claude Code caches in `~/.claude.json`, with
+  the account it belongs to and when it was fetched. The panel writes it once a
+  minute and reads whichever of the two files is newer.
 - `offsets.json` — per-transcript file read positions, so re-running the
   scan never re-reads or double-counts a line.
 - `session_marks.json` — one bookmark per session recording the newest event
@@ -678,8 +724,9 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   run happened to append the events. Bookmarks for sessions idle longer than
   the 8-day prune window are dropped.
 - `config.json` — the widget's last window position and size
-  (`widget_position`, `widget_scale`), and `autolaunch_paused` when sessions are
-  not allowed to open the panel.
+  (`widget_position`, `widget_scale`), `autolaunch_paused` when sessions are not
+  allowed to open the panel, and `usage_poll_seconds` when the limit fetch should
+  run at something other than once a minute (`0` switches it off).
 - `widget.lock` — held exclusively by the running panel for as long as it
   lives. This is how the launcher tells whether one is already up; the kernel
   drops it however the panel dies, including a hard kill.
@@ -695,9 +742,10 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
 
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
-`~/.claude/projects/` from scratch. You lose the saved window position and size
-and a paused auto-launch, nothing else — the limit percentages are unaffected,
-since they live in Claude Code's own cache rather than here. With the bookmarks
+`~/.claude/projects/` from scratch. You lose the saved window position and size,
+a paused auto-launch and a custom poll interval, nothing else — the limit
+percentages are unaffected, since the next fetch is a minute away and Claude
+Code's own cache answers in the meantime. With the bookmarks
 gone too, the first turn after a reset reads as the whole session's cost, since
 there is no earlier mark to measure from; it corrects itself on the next turn.
 

@@ -1,7 +1,7 @@
 # tests/test_utilization.py
 """Every way the cached account figures can be untrustworthy."""
 
-from cost_meter import utilization
+from cost_meter import paths, store, utilization
 from tests.support import TempHome
 
 NOW = 1_786_000_000.0
@@ -28,7 +28,13 @@ LEGACY = {
 }
 
 
-class UtilizationTest(TempHome):
+class WritesCache:
+    """Writes the stand-in for Claude Code's own cache. Not a test case itself.
+
+    A mixin rather than a base test class so that inheriting the helper does not
+    also inherit and re-run every test beside it.
+    """
+
     def write(self, utilization_block, account=ACCOUNT,
               cache_account=ACCOUNT, fetched_s=NOW - 60.0):
         self.write_claude_config({
@@ -40,6 +46,8 @@ class UtilizationTest(TempHome):
             },
         })
 
+
+class UtilizationTest(WritesCache, TempHome):
     def test_the_limits_array_gives_both_rows_with_severity(self):
         self.write(LIMITS)
         result = utilization.read(now=NOW)
@@ -104,3 +112,66 @@ class UtilizationTest(TempHome):
     def test_a_cache_with_no_utilization_block_is_no_answer(self):
         self.write(None)
         self.assertIsNone(utilization.read(now=NOW))
+
+
+class TwoSourcesTest(WritesCache, TempHome):
+    """Our own fetch beside Claude Code's cache. The newer figure wins.
+
+    Newer rather than ours-first: with the poll disabled, or after a suspend, a
+    session start can leave Claude Code's cache the fresher of the two.
+    """
+
+    OURS = {"limits": [
+        {"kind": "session", "percent": 42, "severity": "normal",
+         "resets_at": RESET_5H, "scope": None, "is_active": True},
+        {"kind": "weekly_all", "percent": 44, "severity": "normal",
+         "resets_at": RESET_7D, "scope": None, "is_active": True},
+    ]}
+
+    def write_ours(self, block=None, account=ACCOUNT, fetched_s=NOW - 5.0):
+        store.write_json_atomic(paths.usage_path(), {
+            "accountUuid": account,
+            "fetchedAtMs": fetched_s * 1000.0,
+            "utilization": self.OURS if block is None else block,
+        })
+
+    def test_our_fetch_wins_when_it_is_the_newer_of_the_two(self):
+        self.write(LIMITS, fetched_s=NOW - 4 * 3600.0)
+        self.write_ours(fetched_s=NOW - 5.0)
+        result = utilization.read(now=NOW)
+        self.assertEqual(result["rows"][utilization.SESSION]["pct"], 42)
+        self.assertAlmostEqual(result["age_s"], 5.0, places=1)
+
+    def test_claude_codes_cache_wins_when_it_is_the_newer_of_the_two(self):
+        self.write(LIMITS, fetched_s=NOW - 30.0)
+        self.write_ours(fetched_s=NOW - 4 * 3600.0)
+        self.assertEqual(utilization.read(now=NOW)["rows"][utilization.SESSION]["pct"],
+                         11)
+
+    def test_our_fetch_answers_on_its_own(self):
+        # No cachedUsageUtilization at all -- a fresh install, or a Claude Code
+        # that has not asked yet. The account uuid still comes from that file.
+        self.write_claude_config({"oauthAccount": {"accountUuid": ACCOUNT}})
+        self.write_ours()
+        self.assertEqual(utilization.read(now=NOW)["rows"][utilization.SESSION]["pct"],
+                         42)
+
+    def test_a_file_we_wrote_for_another_account_is_refused(self):
+        # What a re-login leaves behind on our side of the fence.
+        self.write(LIMITS, fetched_s=NOW - 4 * 3600.0)
+        self.write_ours(account="acct-2")
+        self.assertEqual(utilization.read(now=NOW)["rows"][utilization.SESSION]["pct"],
+                         11)
+
+    def test_a_file_we_wrote_past_the_sanity_cap_is_refused(self):
+        self.write(LIMITS, fetched_s=NOW - 60.0)
+        self.write_ours(fetched_s=NOW - utilization.MAX_AGE_SECONDS - 1.0)
+        self.assertEqual(utilization.read(now=NOW)["rows"][utilization.SESSION]["pct"],
+                         11)
+
+    def test_an_unreadable_file_of_ours_leaves_the_cache_answering(self):
+        self.write(LIMITS, fetched_s=NOW - 60.0)
+        with open(paths.usage_path(), "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        self.assertEqual(utilization.read(now=NOW)["rows"][utilization.SESSION]["pct"],
+                         11)

@@ -1,18 +1,24 @@
 # cost_meter/utilization.py
-"""The account's limit percentages, as Claude Code last cached them.
+"""The account's limit percentages, from whichever source read them last.
 
-Claude Code asks the server how much of each limit the *account* has used, and
-caches the answer in ~/.claude.json under `cachedUsageUtilization`. Reading that
-file is the whole of this module, and it is the only way the panel can know these
-figures: a limit belongs to the account, while a transcript only ever records
-what happened on this machine. No calibration can bridge that -- it would divide
-one machine's dollars by the whole account's ceiling, which is wrong by however
-much work happens elsewhere.
+A limit belongs to the account, while a transcript only ever records what
+happened on this machine, so these figures cannot be derived locally at all. No
+calibration can bridge that -- it would divide one machine's dollars by the whole
+account's ceiling, which is wrong by however much work happens elsewhere.
 
-Nothing here reaches the network. The cache is a side effect of Claude Code
-running, so on a machine in use it is present and recent, and on one that is not
-it is absent or old. Both of those are answered with None rather than with a
-figure presented as current.
+They arrive from the server, and two files carry them in the same shape:
+
+- `~/.claude.json`, under `cachedUsageUtilization`, which Claude Code writes when
+  it asks the server -- a session starting, or a `/usage`, and nothing else.
+- `data/usage.json`, which cost_meter/usage_api.py writes by asking the same
+  endpoint ourselves, on the panel's own few-second poll.
+
+Nothing *here* reaches the network; this module only parses and chooses. The
+choice is by fetch time rather than by source, because either one can be the
+newer. Every way an answer can be untrustworthy -- a missing or unreadable file,
+another account's, one past the sanity cap, one carrying no percentage this
+module understands -- is answered with None rather than with a figure presented
+as current.
 """
 
 import time
@@ -106,35 +112,26 @@ def _from_legacy(utilization):
     return rows
 
 
-def read(now=None):
-    """The account's limit rows and the cache's age, or None.
+def _parse(cache, account, now):
+    """Rows, age and fetch time out of one cache object, or None.
 
-    None covers every way the answer can be untrustworthy: no file, an unreadable
-    one, a cache belonging to a different account, one past MAX_AGE_SECONDS, or
-    one carrying no percentage this module understands. The caller shows dollars
-    in all of those cases, which is what these rows showed before any of this
-    existed.
+    Applied identically to whichever file the object came from -- Claude Code's
+    `cachedUsageUtilization` or the one cost_meter/usage_api.py writes, which is
+    deliberately the same shape. Every check here is for a way the object can be
+    untrustworthy rather than merely old:
 
-    An hours-old figure is *not* one of those cases -- it is the normal one, and
-    the caller states it as a floor. Whether a particular row still describes a
-    live window is decided from its `resets_at` at the moment it is drawn, not
-    here: a five-hour block can turn over while nothing is writing state.json.
+    - A cache left behind by a previous login describes somebody else's account.
+      Claude Code makes this same comparison and drops the cache on a mismatch.
+    - `fetchedAtMs` has to be a number, because everything else depends on
+      knowing when the figure was true.
+    - Past MAX_AGE_SECONDS no bound survives; see the note on that constant.
+    - A shape carrying no percentage this module understands has nothing to say.
 
-    Returns `{"age_s": float, "rows": {kind: row}}`. The age travels with the
-    rows because the panel has to be able to say how old a figure is.
+    An hours-old figure is *not* one of those cases -- it is the normal one for
+    Claude Code's cache, and the caller states it as a floor.
     """
-    now = time.time() if now is None else now
-    data = store.read_json(paths.claude_config_path(), default=None)
-    if not isinstance(data, dict):
-        return None
-
-    cache = data.get("cachedUsageUtilization")
     if not isinstance(cache, dict):
         return None
-
-    # A cache left behind by a previous login describes somebody else's account.
-    # Claude Code makes this same comparison and drops the cache on a mismatch.
-    account = (data.get("oauthAccount") or {}).get("accountUuid")
     if not account or cache.get("accountUuid") != account:
         return None
 
@@ -158,4 +155,45 @@ def read(now=None):
     if SESSION not in rows and WEEKLY not in rows:
         return None
 
-    return {"age_s": round(age, 1), "rows": rows}
+    return {"age_s": round(age, 1), "rows": rows, "fetched_ms": fetched_ms}
+
+
+def read(now=None):
+    """The account's limit rows and their age, from whichever source is newer.
+
+    Two sources answer the same question in the same shape, so this picks between
+    them rather than preferring one: `data/usage.json`, which the panel fills by
+    asking the server itself every few seconds, and Claude Code's
+    `cachedUsageUtilization`, which moves when a session starts or the user runs
+    `/usage`. Newer wins on `fetchedAtMs` -- with the poll turned off, or after a
+    suspend, Claude Code's cache is genuinely the fresher of the two, and a
+    fixed preference would show the older figure in that case.
+
+    The account uuid both are checked against comes from `~/.claude.json`, which
+    is the only file that names who is logged in. An unreadable one therefore
+    withdraws both sources, which is the same answer this returned before there
+    was a second source at all.
+
+    None means there is nothing trustworthy to show, and the caller falls back to
+    dollars -- what these rows showed before any of this existed. Whether a row
+    still describes a live window is decided from its `resets_at` when it is
+    drawn, not here: a five-hour block can turn over while nothing is writing.
+
+    Returns `{"age_s": float, "rows": {kind: row}}`. The age travels with the
+    rows because the panel has to be able to say how old a figure is.
+    """
+    now = time.time() if now is None else now
+    config = store.read_json(paths.claude_config_path(), default=None)
+    if not isinstance(config, dict):
+        config = {}
+    account = (config.get("oauthAccount") or {}).get("accountUuid")
+
+    answers = [_parse(cache, account, now) for cache in
+               (config.get("cachedUsageUtilization"),
+                store.read_json(paths.usage_path(), default=None))]
+    answers = [answer for answer in answers if answer]
+    if not answers:
+        return None
+
+    newest = max(answers, key=lambda answer: answer["fetched_ms"])
+    return {"age_s": newest["age_s"], "rows": newest["rows"]}

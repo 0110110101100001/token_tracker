@@ -998,6 +998,159 @@ class LimitPollTest(TempHome):
         self.assertEqual(paths.state_path().stat().st_mtime, state_mtime)
 
 
+class UsageIntervalTest(TempHome):
+    """How often the panel asks the server itself, out of a file a user can edit.
+
+    Validated rather than trusted for the reason saved_scale() is: config.json is
+    hand-editable, and a nonsense value here would either hammer the endpoint or
+    silently stop the polling that the row's freshness now depends on.
+    """
+
+    def test_the_default_is_a_minute(self):
+        # Measured, not chosen: five seconds earns `429 Retry-After: 196` from the
+        # endpoint, and a minute was answered `200` for as long as it was tried.
+        self.assertEqual(widget.usage_interval({}), 60)
+
+    def test_a_configured_interval_is_honoured(self):
+        self.assertEqual(widget.usage_interval({"usage_poll_seconds": 30}), 30)
+
+    def test_zero_turns_the_fetch_off(self):
+        # The one value that has to survive validation unchanged: it is the
+        # off switch, and rounding it up to a second would defeat it.
+        self.assertEqual(widget.usage_interval({"usage_poll_seconds": 0}), 0)
+
+    def test_a_sub_second_interval_is_rounded_up_rather_than_into_the_off_switch(self):
+        self.assertEqual(widget.usage_interval({"usage_poll_seconds": 0.2}), 1)
+
+    def test_nonsense_falls_back_to_the_default(self):
+        for value in ("often", None, True, -5, [5]):
+            with self.subTest(value=value):
+                self.assertEqual(widget.usage_interval({"usage_poll_seconds": value}),
+                                 60)
+
+    def test_the_interval_is_read_from_config(self):
+        self.write_config({"usage_poll_seconds": 12})
+        self.assertEqual(widget.CostMeter.saved_usage_interval(), 12)
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class UsageFetchTest(TempHome):
+    """The panel's own poll of the server, with the network replaced.
+
+    `usage_api.refresh` is what gets patched rather than the socket underneath it:
+    the question these tests ask is about the panel's wiring -- does a timer fire,
+    does the answer cross back from the worker thread, does the row repaint -- and
+    that is answered without any HTTP at all. What refresh() itself does with a
+    body is tests/test_usage_api.py's subject.
+    """
+
+    ACCOUNT = "acct-1"
+    CAP_SECONDS = 5
+
+    def build(self):
+        window = widget.CostMeter()
+        window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(window.destroy)
+        return window
+
+    def write_state(self):
+        store.write_json_atomic(paths.state_path(), {
+            "updated_at": datetime.now().astimezone().isoformat(),
+            "last_turn_usd": 0.0, "session": {"id": "s1", "usd": 1.0},
+            "today_usd": 1.0, "window_5h": {"usd": 1.0},
+            "window_7d": {"usd": 1.0}, "limits": None, "unknown_models": []})
+
+    def write_account(self):
+        # No cachedUsageUtilization: the row starts with no account figure at all,
+        # so a percentage appearing on it can only have come from our own fetch.
+        store.write_json_atomic(paths.claude_config_path(),
+                                {"oauthAccount": {"accountUuid": self.ACCOUNT}})
+
+    def fake_refresh(self, pct):
+        """Stand in for the fetch: writes what a real answer would have written."""
+        def refresh(now=None, get=None):
+            store.write_json_atomic(paths.usage_path(), {
+                "accountUuid": self.ACCOUNT,
+                "fetchedAtMs": time.time() * 1000.0,
+                "utilization": {"limits": [
+                    {"kind": "session", "percent": pct, "severity": "normal",
+                     "resets_at": None, "scope": None, "is_active": True}]},
+            })
+            return True, None
+        return refresh
+
+    def run_until_row_moves(self, window, before):
+        loop = GLib.MainLoop()
+        GLib.timeout_add(50, lambda: loop.quit()
+                         if window.window_5h.get_text() != before else True)
+        GLib.timeout_add_seconds(self.CAP_SECONDS, loop.quit)
+        loop.run()
+
+    def test_a_figure_the_panel_fetched_itself_reaches_the_row(self):
+        self.write_state()
+        self.write_account()
+        # A second rather than the default five, which would land on the cap
+        # itself. What is under test is the wiring, not the interval.
+        self.write_config({"usage_poll_seconds": 1})
+        self.enterContext(unittest.mock.patch.object(
+            widget.usage_api, "refresh", self.fake_refresh(7)))
+        self.enterContext(unittest.mock.patch.object(
+            widget, "STALE_POLL_SECONDS", 3600))  # so the row cannot move by poll
+        window = self.build()
+        self.assertEqual(window.window_5h.get_text(), "$1.00")
+
+        # Nothing else can be responsible: state.json is never rewritten, the
+        # cache holds no figure, and the staleness poll is an hour out.
+        self.run_until_row_moves(window, "$1.00")
+        self.assertEqual(window.window_5h.get_text(), "≈7 %")
+
+    def test_the_fetch_is_not_started_at_all_when_it_is_switched_off(self):
+        self.write_state()
+        self.write_account()
+        self.write_config({"usage_poll_seconds": 0})
+        calls = []
+        self.enterContext(unittest.mock.patch.object(
+            widget.usage_api, "refresh",
+            lambda **kw: (calls.append(1), (True, None))[1]))
+        window = self.build()
+
+        loop = GLib.MainLoop()
+        GLib.timeout_add_seconds(2, loop.quit)
+        loop.run()
+        self.assertEqual(calls, [])
+        self.assertEqual(window.window_5h.get_text(), "$1.00")
+
+    def test_repeated_failures_back_the_fetch_off_instead_of_retrying_at_speed(self):
+        self.write_state()
+        self.write_account()
+        window = self.build()
+
+        window.usage_fetched(False)
+        first = window.usage_wait
+        window.usage_fetched(False)
+        self.assertGreater(window.usage_wait, first)
+
+    def test_the_wait_the_server_asked_for_beats_the_backoff(self):
+        # A 429 names its own pace, and it is longer than any early backoff step.
+        # Asking again before it has passed would only earn another 429.
+        self.write_state()
+        self.write_account()
+        window = self.build()
+
+        window.usage_fetched(False, 196.0)
+        self.assertGreaterEqual(window.usage_wait, 196.0)
+
+    def test_an_answer_clears_the_backoff(self):
+        self.write_state()
+        self.write_account()
+        window = self.build()
+
+        window.usage_fetched(False)
+        self.assertGreater(window.usage_wait, 0.0)
+        window.usage_fetched(True)
+        self.assertEqual(window.usage_wait, 0.0)
+
+
 @unittest.skipUnless(HAS_DISPLAY, "no display")
 class ScaleMemoryTest(unittest.TestCase):
     """A resized panel opens at the size it was left at.

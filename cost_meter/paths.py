@@ -38,6 +38,18 @@ def config_path():
     return home() / "config.json"
 
 
+def usage_path():
+    """Where our own read of the account's limits lands.
+
+    Ours rather than Claude Code's: cost_meter/usage_api.py asks the server the
+    same question Claude Code asks and writes the answer here, in the same shape,
+    so utilization.read() has one parser for both. Under home() rather than beside
+    Claude Code's own file, because it is this tool's data and every test
+    redirects that directory already.
+    """
+    return home() / "usage.json"
+
+
 def lock_path():
     return home() / "tally.lock"
 
