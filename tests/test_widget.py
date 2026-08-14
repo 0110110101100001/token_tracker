@@ -900,22 +900,49 @@ class LimitRowsOnThePanelTest(TempHome):
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")
 class LimitPollTest(TempHome):
-    """The poll alone repaints the rows when only the cache has changed.
+    """Two independent things repaint the rows when only the cache has changed.
 
     Every other test here drives refresh() by hand, which proves what refresh()
-    does and nothing about what calls it. This one runs a real main loop and
-    touches nothing but ~/.claude.json, so the only thing that can have moved the
-    row is the timer -- the whole point of reading the cache live. A /usage
-    reaching the panel within a minute, with no turn in between, rests on exactly
-    this wiring, and a broken timer would otherwise look like a stuck figure.
+    does and nothing about what calls it. These run a real main loop and touch
+    nothing but the cache, so whatever moved the row was the wiring under test.
+    Each is tested with the other one unable to interfere:
 
-    The poll is shortened to a second and the loop quits the moment the text
-    moves, so the normal cost is about that; the five-second cap is only there so
-    a genuine break fails instead of hanging the suite.
+    - the **file monitor**, with the poll left at its full 60 seconds, so a row
+      that moves inside the cap cannot have been the timer;
+    - the **poll**, with the monitor deliberately dropped, so a row that moves
+      cannot have been the monitor.
+
+    Both matter. The monitor is what makes a /usage land on the panel while
+    somebody is still looking at the /usage output; the poll is what catches a
+    window reaching its `resets_at`, where no file changes at all.
+
+    The loops quit the moment the text moves, so the normal cost is a fraction of
+    the cap; the cap is only there so a genuine break fails instead of hanging.
     """
 
     ACCOUNT = "acct-1"
     CAP_SECONDS = 5
+
+    def run_until_row_moves(self, window, before):
+        """Spin a real main loop until the 5h row changes, or the cap runs out."""
+        loop = GLib.MainLoop()
+        GLib.timeout_add(50, lambda: loop.quit()
+                         if window.window_5h.get_text() != before else True)
+        GLib.timeout_add_seconds(self.CAP_SECONDS, loop.quit)
+        loop.run()
+
+    def build(self):
+        window = widget.CostMeter()
+        window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(window.destroy)
+        return window
+
+    def write_state(self):
+        store.write_json_atomic(paths.state_path(), {
+            "updated_at": datetime.now().astimezone().isoformat(),
+            "last_turn_usd": 0.0, "session": {"id": "s1", "usd": 1.0},
+            "today_usd": 1.0, "window_5h": {"usd": 1.0},
+            "window_7d": {"usd": 1.0}, "limits": None, "unknown_models": []})
 
     def write_cache(self, pct):
         store.write_json_atomic(paths.claude_config_path(), {
@@ -929,32 +956,44 @@ class LimitPollTest(TempHome):
             },
         })
 
-    def test_a_cache_change_alone_reaches_the_row(self):
-        store.write_json_atomic(paths.state_path(), {
-            "updated_at": datetime.now().astimezone().isoformat(),
-            "last_turn_usd": 0.0, "session": {"id": "s1", "usd": 1.0},
-            "today_usd": 1.0, "window_5h": {"usd": 1.0},
-            "window_7d": {"usd": 1.0}, "limits": None, "unknown_models": []})
+    def test_the_monitor_puts_a_new_figure_up_without_waiting_for_the_poll(self):
+        self.write_state()
         self.write_cache(1)
-
-        # Read at construction, so it has to be patched before the window exists.
-        self.enterContext(unittest.mock.patch.object(
-            widget, "STALE_POLL_SECONDS", 1))
-        window = widget.CostMeter()
-        window.disconnect_by_func(Gtk.main_quit)
-        self.addCleanup(window.destroy)
+        window = self.build()
         self.assertEqual(window.window_5h.get_text(), "≈1 %")
 
-        # From here state.json is never written again.
+        # The poll is left at 60 seconds, which is well past the cap, so it
+        # cannot be what moves the row here. state.json is never written again
+        # either, so its own monitor is out too.
+        self.assertEqual(widget.STALE_POLL_SECONDS, 60)
         state_mtime = paths.state_path().stat().st_mtime
         self.write_cache(5)
 
-        loop = GLib.MainLoop()
-        GLib.timeout_add(100, lambda: loop.quit()
-                         if window.window_5h.get_text() != "≈1 %" else True)
-        GLib.timeout_add_seconds(self.CAP_SECONDS, loop.quit)
-        loop.run()
+        self.run_until_row_moves(window, "≈1 %")
+        self.assertEqual(window.window_5h.get_text(), "≈5 %")
+        self.assertEqual(paths.state_path().stat().st_mtime, state_mtime)
 
+    def test_the_poll_puts_a_new_figure_up_when_no_monitor_fires(self):
+        self.write_state()
+        self.write_cache(1)
+        # Read at construction, so it has to be patched before the window exists.
+        self.enterContext(unittest.mock.patch.object(
+            widget, "STALE_POLL_SECONDS", 1))
+        window = self.build()
+        self.assertEqual(window.window_5h.get_text(), "≈1 %")
+
+        # Dropped rather than never created: a monitor stops delivering once it
+        # is cancelled, which leaves the timer as the only way back to refresh().
+        # This stands in for the case the poll is really there for -- a window
+        # reaching its `resets_at`, where no file changes at all -- because that
+        # one cannot be staged inside a five-second cap.
+        for monitor in window.monitors:
+            monitor.cancel()
+
+        state_mtime = paths.state_path().stat().st_mtime
+        self.write_cache(5)
+
+        self.run_until_row_moves(window, "≈1 %")
         self.assertEqual(window.window_5h.get_text(), "≈5 %")
         self.assertEqual(paths.state_path().stat().st_mtime, state_mtime)
 

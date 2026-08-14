@@ -718,12 +718,33 @@ class CostMeter(Gtk.Window):
         self.update_config(lambda c: c.__setitem__("widget_position", position))
 
     def watch(self):
-        path = paths.state_path()
+        """Repaint whenever either source file changes.
+
+        Two files, because the panel has two sources and they move on unrelated
+        schedules: state.json when the tally hook finishes a turn, and Claude
+        Code's cache when it re-asks the server — session start, or a /usage.
+
+        The cache is watched rather than left to the 60-second poll because that
+        minute is exactly when somebody is looking. `/usage` and the panel read
+        the same figures, so a percentage that disagrees with the /usage just
+        printed above it reads as a broken panel, not as a poll that has not come
+        round yet. The poll stays: it is what notices a window reaching its
+        `resets_at`, which changes a row with no file changing at all.
+
+        The monitors are held on the instance because a GFileMonitor stops
+        watching when it is collected, and a local would be collected the moment
+        this returns.
+        """
+        self.monitors = [self._watch_file(paths.state_path()),
+                         self._watch_file(paths.claude_config_path())]
+
+    def _watch_file(self, path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.monitor = Gio.File.new_for_path(str(path)).monitor_file(
+        monitor = Gio.File.new_for_path(str(path)).monitor_file(
             Gio.FileMonitorFlags.NONE, None
         )
-        self.monitor.connect("changed", lambda *_: self.refresh())
+        monitor.connect("changed", lambda *_: self.refresh())
+        return monitor
 
     @staticmethod
     def read_limits():
@@ -735,8 +756,8 @@ class CostMeter(Gtk.Window):
         nobody's schedule at all. Between turns that left the 5h row showing
         dollars for a window that had already turned over, while a live
         percentage for the new block sat on disk unread. This is what closes that
-        gap: the 60-second poll calls refresh(), so a new figure is up within a
-        minute of appearing, turn or no turn.
+        gap: watch() puts a file monitor on the cache, so a new figure is up as
+        soon as it is written, and the 60-second poll re-reads it besides.
 
         Sole source, with no fallback to state.json's copy: utilization.read()
         returns None exactly when the cache cannot be trusted — missing, another

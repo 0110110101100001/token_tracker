@@ -235,8 +235,8 @@ One more row appears only when needed. It carries two kinds of warning:
   old.
 
   **The limit rows keep their colour**, because nothing about them went stale:
-  they are re-read from Claude Code's cache every 60 seconds, so a dead hook
-  does not age a percentage by a second. Their own freshness is answered
+  they are re-read from Claude Code's cache, which the panel watches directly, so
+  a dead hook does not age a percentage by a second. Their own freshness is answered
   separately — the cache's age is in the tooltip, and a row whose window has
   reset is withdrawn outright. A limit row does grey out when there is no
   account figure at all, but then it is showing dollars like the rest.
@@ -543,14 +543,22 @@ confidently wrong:
   Claude Code's own one-hour threshold — it discards a figure it can re-fetch on
   demand, and the panel cannot ask for one.
 
-**The panel reads that cache itself**, on its own 60-second poll, rather than
-waiting for the copy the hook writes into `state.json` — which only moves when a
-turn lands. Two things move without a turn: Claude Code refreshing the cache when
-a session starts, and a 5-hour block resetting. Read through `state.json` alone,
-both went unseen, so a block that turned over at lunchtime left the 5h row
-showing dollars all afternoon while a live percentage for the new block sat on
-disk unread. The copy in `state.json` is still written — `tally` needs the reset
-times to anchor the dollar windows — and the panel deliberately ignores it.
+**The panel reads that cache itself**, rather than waiting for the copy the hook
+writes into `state.json` — which only moves when a turn lands. Two things move
+without a turn: Claude Code refreshing the cache when a session starts or you run
+`/usage`, and a 5-hour block resetting. Read through `state.json` alone, both
+went unseen, so a block that turned over at lunchtime left the 5h row showing
+dollars all afternoon while a live percentage for the new block sat on disk
+unread. The copy in `state.json` is still written — `tally` needs the reset times
+to anchor the dollar windows — and the panel deliberately ignores it.
+
+Two things bring a new figure to the row, and they cover different failures. A
+**file monitor** on the cache repaints the moment it is written, which is what
+matters after a `/usage`: the panel is usually right beside the output you are
+comparing it against, and a minute's disagreement there reads as a broken panel.
+The **60-second poll** catches what no file change announces — a window reaching
+its `resets_at`, where the row has to be withdrawn with nothing having been
+written anywhere.
 
 The previous design derived these percentages instead, by dividing locally
 recorded spend by a ceiling you calibrated against a `/usage` reading. That is
@@ -645,8 +653,8 @@ your spend.
   are ignored. They are zero across every transcript on the machine this was
   built for.
 - **`/usage` and the panel now agree by construction**, because they read the
-  same file, and the panel re-reads it every 60 seconds — so a `/usage` reaches
-  the rows within a minute, without waiting for a turn.
+  same file, and the panel watches it — so a `/usage` reaches the rows as it is
+  written, without waiting for a turn.
 
 ## Files
 
