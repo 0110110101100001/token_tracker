@@ -1,16 +1,26 @@
 # Claude cost meter
 
-A bottom-right, always-on-top GTK panel that shows what your Claude Code work
+Always-on-top GTK panel that shows what your Claude Code work
 costs. It refreshes itself after every assistant turn, driven by a `Stop`
 hook — you never have to run anything by hand for the numbers to move.
 
 It runs on **Linux and Windows**. Its **dollar figures** count only the Claude
 Code work done on the machine it runs on, which is the first thing to understand
 about it; its **limit percentages** come from the server and cover the whole
-account — see [What it counts](#what-it-counts).
+account — see [What it counts](docs/METERING.md#what-it-counts).
 
-**Jump to:** [Install](#install) · [Limit percentages](#limit-percentages) ·
-[Uninstall](#uninstall) · [Troubleshooting](#troubleshooting)
+This file is the commands you need day to day: installing, autostart, keeping
+the panel closed, uninstalling. Everything else is next door:
+
+- **[What it counts, and how](docs/METERING.md)** — what each figure is
+  measuring, where the limit percentages come from, `pricing.json`, and the
+  known limitations.
+- **[The panel](docs/PANEL.md)** — the rows on screen and what they mean, why
+  the figures roll, moving and resizing it, and what the graphical session has
+  to provide.
+- **[Reference](docs/REFERENCE.md)** — what the installer writes into
+  `~/.claude/settings.json`, starting and stopping the panel by hand, every file
+  under `data/`, the `config.json` settings, troubleshooting, and the tests.
 
 ## Install
 
@@ -18,8 +28,13 @@ You need [pixi](https://pixi.sh) and Claude Code. Nothing else has to be
 installed system-wide: pixi supplies Python and the GTK 3 bindings itself, so in
 particular you do **not** need a distribution's `python3-gi`.
 
-**Linux** — under Xorg or XWayland, since the panel has to place itself in a
-corner and raise itself above other windows:
+**Linux** — any normal desktop session, Xorg or Wayland. A Wayland session runs
+the panel through XWayland, which every mainstream desktop already ships, so
+there is nothing to install or switch on for the display either; the one setup
+that fails is a compositor deliberately running without XWayland, where the panel
+comes up with
+[no visible effect](docs/PANEL.md#what-the-graphical-session-has-to-provide).
+Four commands:
 
 ```bash
 git clone <this repo> && cd token_calculator
@@ -45,7 +60,7 @@ own, and the numbers start moving after your first assistant turn.
 On Windows that restart is not optional, and skipping it is the one failure that
 looks like nothing happening at all: the hooks have to find `pixi` on `PATH`, and
 a `PATH` change does not reach a process that was already running when the change
-was made — so the hooks run, find no pixi, and exit 0 exactly as they are
+was made. So the hooks run, find no pixi, and exit 0 exactly as they are
 designed to. On Linux you only need it if you installed pixi from the same shell
 Claude Code was started from.
 
@@ -61,44 +76,18 @@ lock is portable and the entry points are Python — but no `osx-*` platform has
 been solved or smoke-tested, so it is not claimed.
 
 What the installer writes, and why the hook paths look the way they do, is in
-[Install, in detail](#install-in-detail).
+[Install, in detail](docs/REFERENCE.md#install-in-detail).
 
-## Limit percentages
-
-There is nothing to set up. The **5h window** and **week** rows show the
-account's own figures — the same ones `/usage` prints — and the panel asks the
-server for them itself, **once a minute**. No calibration, and nothing to redo
-when your plan changes or a promotion moves the ceiling.
-
-A minute is the endpoint's pace rather than a setting worth tuning: five-second
-polling is refused outright (`429`, with a three-minute cool-off attached), and a
-whole percentage point of a five-hour window is minutes of heavy work anyway. To
-change it, or to stop the panel talking to the network at all, put
-`usage_poll_seconds` in `data/config.json` — seconds, or `0` for off. With it off
-the rows fall back to whatever Claude Code last cached, which is what they used to
-show.
-
-**`≈` marks a floor, not a guess.** The figure was true when it was fetched, and
-usage within a window only ever grows, so `≈17 %` means at least 17 %, never less —
-the tooltip says so in words. The marker stays on a figure that is seconds old,
-because the unmarked form would be claiming an exactness it never has: the
-percentage is a whole number, the window is still filling while you read it, and
-one refused request puts the row back on Claude Code's older cache.
-
-Hover either row for what this machine spent in that window, how old the account
-figure is, and the reset time in full.
-
-A row falls back to a dollar figure alone when there is no account figure to show
-— Claude Code has never run on this machine, the cache belongs to a different
-login, or the window it described has since reset. What is checked before a figure
-is trusted, and what replaced the old calibration, is under
-[Where the limit figures come from](#where-the-limit-figures-come-from).
+There is nothing to set up for the **limit percentages**. The **5h window** and
+**week** rows show the account's own figures — the same ones `/usage` prints —
+and the panel asks the server for them itself, once a minute. No calibration,
+and nothing to redo when your plan changes or a promotion moves the ceiling.
 
 ## Keep the panel closed
 
-By default every Claude Code session opens the panel if one is not already up —
-including a panel you closed on purpose ten minutes earlier. To make closing it
-stick:
+Close the panel with right click → *Quit*. By default, though, every Claude Code
+session opens it again if one is not already up — including a panel you closed on
+purpose ten minutes earlier. To make closing it stick:
 
 ```bash
 pixi run autolaunch -- --off      # sessions stop opening the panel
@@ -111,714 +100,27 @@ auto-launch** / **Resume auto-launch**.
 
 Pausing suspends the launch and nothing else. **Recording continues** — the
 `Stop` hook still prices every turn, so a paused week leaves no gap in the
-figures and they are all there when you bring the panel back. A panel already on
-screen stays up; pausing is a statement about the next session, not this one.
+figures and they are all there when you bring the panel back.
 
 **To open the panel while it stays paused:**
 
 ```bash
+cd token_calculator
 pixi run start
 ```
 
 That is the command for exactly this: it opens a panel whatever the flag says,
 leaves the flag alone, and detaches, so the panel outlives the shell you typed
-it in. The pause governs what *sessions* do; typing a command is not a session,
-and overriding it once is not a decision to stop overriding it every time after.
-It also reports what it did — `launch: spawned pixi pid 12345`, or
-`launch: already running (pid …)` — because the alternative is a command that
-prints nothing whether it worked or not.
-
-`pixi run launch` is the one thing a pause does stop, deliberately: it *is* the
-automatic launch — the hook runs that exact command — so it obeys the flag and
-logs `launch: paused` rather than starting a panel, silently, as anything on a
-session's critical path must. If you reach for it by hand while paused, nothing
-happens and nothing says so; that is what `start` exists to avoid.
-
-`pixi run widget` (foreground) and `./run_widget.sh` (`run_widget.cmd` on
-Windows) also still work, and both ignore the pause too. They differ from `show`
-in staying attached to your shell, so closing the terminal takes the panel with
-it.
-
-Do not confuse this with `install.sh --autostart`, which is about the panel
-starting when you *log in*. The two are independent: a paused auto-launch does
-not stop the login entry, and removing the login entry does not stop sessions
-opening the panel.
+it in. The other ways to start and stop one by hand are under
+[Starting and stopping](docs/REFERENCE.md#starting-and-stopping).
 
 ## Uninstall
 
 ```bash
+cd token_calculator
 ./install.sh --uninstall      # Linux;  install.cmd --uninstall on Windows
 ```
 
 That removes both hooks from `~/.claude/settings.json` and the autostart entry
 if you made one. Your ledger is untouched — delete `data/` as well for a full
-reset (see [Files](#files)).
-
-## What it counts
-
-Worth reading before you trust a figure on the panel.
-
-- **The dollar rows: this machine, this account, and nothing else.** Their whole
-  input is the Claude Code transcripts under `~/.claude/projects/` on the computer
-  the tool runs on. Claude Code on a second machine, under another user account,
-  on the other side of a dual boot, or on Windows beside WSL writes its
-  transcripts somewhere this installation never looks. claude.ai, the desktop app
-  and the phone write no local transcripts at all. All of that spends your
-  subscription without moving a dollar figure here.
-- **The dollar figures are an API-equivalent, not an invoice.** They price your
-  token counts at published API rates, which is a consistent way to weight and
-  compare usage. On a subscription it is not a bill you will receive.
-- **The limit percentages are the account's, and they are floors.** They come
-  from the server, so they cover every machine, claude.ai and the phone alike —
-  the machine boundary above does not apply to them. What they carry instead is
-  age: usually a minute of it, and hours whenever the panel cannot reach the
-  network, since usage since the fetch only pushes them up. That is why the row
-  says `≈`.
-
-The two scopes are deliberately never mixed on one row. A dollar figure beside a
-percentage reads as one claim, and dividing one by the other is exactly the
-mistake this panel used to make: it derived the percentage that way, from a
-ceiling calibrated against local spend, and the result was wrong by however much
-work happened elsewhere — flatteringly wrong, since the unseen usage was missing
-from the numerator only. The dollars now live in the row's tooltip, where each
-figure can be named for what it is.
-
-The full list, including the ones that are only worth knowing once something
-looks wrong, is under [Known limitations](#known-limitations).
-
-## What it is
-
-The panel is a small borderless window anchored to the bottom-right corner of
-your screen. It shows these rows:
-
-- **last turn** — USD cost of the assistant turn that just finished
-- **session** — USD cost of the current Claude Code session
-- **today** — USD cost since local midnight
-- *(separator)*
-- **5h window** — how much of the account's 5-hour limit is used, as a floor:
-  `≈12 % · 18:30`, where `18:30` is the clock time that block resets. Hover for
-  what this machine spent in the block. `$54.73` alone means no account figure was
-  available.
-- **week** — the same for the weekly limit: `≈17 % · Sat 02:59`. The weekday
-  appears because that reset is days out, where a bare `02:59` would read as
-  tonight.
-- **this machine** — USD this installation put into that same week: `$767.24`.
-  It sits directly under the percentage because the two describe one window by
-  different measures — the account's share of its limit, and your own
-  contribution to it. It empties when the percentage does, since both are bounded
-  by the reset the server reports.
-- *(separator)*
-- **billing** — how this session is paying: `team · max 5x` for a seat, `API`
-  when it is billed per token, `—` when neither could be established
-
-The 5-hour limit is a **fixed block, not a trailing five hours**. A block opens
-on the first message sent after the previous one expired and runs five hours from
-that message, which is why `/usage` names a reset time instead of counting down
-continuously. The server tells the panel when the open block ends, and the
-tooltip's dollar figure is bounded by that same window, so the two halves of the
-row describe the same five hours.
-
-That matters more than it sounds: left to guess, this installation would open the
-block on its own first message, and a block opened on another machine — or in the
-browser — began earlier than anything it can see. Taking the boundary from the
-server removes the guess.
-
-The reset time rides with the percentage, as it always has: what it is *for* is
-saying which window the figure describes. When that time passes, the row is
-withdrawn rather than left standing — the window it described is gone, and no
-floor survives it — and the row shows dollars alone until the next figure arrives.
-
-Only the percentage carries the green/amber/red colour, and the colour comes from
-the server's own severity rather than from thresholds compiled in here. The
-thresholds move: this account is currently carrying a +50 % weekly promotion,
-which no hardcoded number would follow.
-
-One more row appears only when needed. It carries two kinds of warning:
-
-- `! stale 1 h 37 min` — `state.json` has not been rewritten for over ten
-  minutes, so the **dollar** figures are that old, and every dollar row greys
-  out with the marker. This is what a broken `Stop` hook looks like: the hook
-  always exits 0 by design, so without this marker the panel would keep showing
-  hours-old numbers as though they were current. It also shows up after a
-  genuinely idle stretch, which is honest — the numbers really are ten minutes
-  old.
-
-  **The limit rows keep their colour**, because nothing about them went stale:
-  they come from the server on the panel's own poll, so a dead hook does not age a
-  percentage by a second. Their own freshness is answered separately — the age is
-  in the tooltip, and a row whose window has reset is withdrawn outright. A limit
-  row does grey out when there is no account figure at all, but then it is showing
-  dollars like the rest.
-- `? claude-something` — a model with no entry in `pricing.json`, so an
-  unpriced model is visible instead of silently costing nothing.
-
-Cost is computed from the same token counts Claude Code already writes to
-its own transcript files under `~/.claude/projects/`; the tool reads those,
-prices each assistant message, and keeps a rolling ledger of the result.
-
-### The billing row
-
-Every figure above this row is a dollar amount whose meaning depends on it. On a
-seat they are notional — a measure of what you used, not of what you owe. On API
-billing they are a bill. The row is there so the two are never confused.
-
-It is decided in this order, first match winning:
-
-1. `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in the session's environment,
-   `apiKeyHelper` in `~/.claude/settings.json`, or `CLAUDE_CODE_USE_BEDROCK` /
-   `CLAUDE_CODE_USE_VERTEX` → **API**. An exported key is what Claude Code
-   prefers over the login it has on disk, so a machine that is signed in
-   perfectly well can still be spending per token.
-2. A `claudeAiOauth` block in `~/.claude/.credentials.json` → the seat, labelled
-   with its `subscriptionType` and `rateLimitTier` (`default_claude_max_5x`
-   becomes `max 5x`).
-3. Neither → `—`. A guessed billing mode would misrepresent every row above it,
-   so the panel says nothing instead.
-
-Only the presence of a credential is ever read, never its value.
-
-**This is not in the transcripts.** `usage.service_tier` is the field that looks
-like it should carry it and does not — it reads `standard` whichever way the
-account is billed, because it names the API's latency tier. So the mode is read
-from the environment by the `Stop` hook, which is the only thing that runs
-*inside* the session it is reporting on: a key exported for one session is
-visible there and in no other process. Two consequences follow. Turns priced
-before this row existed carry no mode and cannot be given one after the fact, so
-an old `state.json` reads `—` until the next turn. And with several sessions
-running under different credentials, the row describes whichever wrote last —
-the same rule the **session** row already follows.
-
-### Rolling figures
-
-The three dollar rows roll to their new figure rather than snapping to it: slow
-start, fast middle, slow settle. It is there so a turn that cost $4 and a turn
-that cost $0.04 stop looking alike; without it the number is simply different
-next time you glance at it, and nothing draws the eye to the fact that anything
-was added.
-
-The two cumulative rows — **session** and **today** — roll from their previous
-total. **last turn** is a delta rather than a running
-total, so it counts up **from zero** on every turn instead: the distance between
-what this turn cost and what the previous one cost is not a quantity anybody is
-watching, and rolling between the two would run the row *downwards* to announce
-a cheap turn after an expensive one. Counting from zero also means the figures
-on the way up mean something on their own — what this turn has cost so far. A
-turn that costs the same as the one before it still counts up again, because two
-turns costing the same cent are still two turns; what marks a turn as new is
-`state.json` being rewritten, not the figure changing.
-
-The roll lasts **one second plus 25 ms for every dollar it covers**, so $40
-added takes two seconds and a few cents take barely more than the base second.
-A fixed duration would make the expensive turn — the one worth watching — the
-one that blurs past fastest. The length is set from the longest of the three
-rows, since they share a clock. Nothing about the row dims or fades while it
-moves: only the figure changes.
-
-What deliberately does **not** roll:
-
-- **the two limit rows.** There is nothing to tween between `≈11 %` and `≈12 %`:
-  the server reports whole percentages, so the row steps however often it is
-  fetched. They are repainted when the figure changes and left alone in between.
-- **any dollar row, while the state is stale.** Stale figures are not being
-  presented as current, and rolling them would say the opposite. They land on
-  their last known values and stay put.
-- **the first paint.** Startup is not a change, and rolling up from zero would
-  claim one that never happened.
-
-Only genuinely new work animates, so the 60-second staleness poll re-reading the
-same `state.json` does not re-run the animation, and a move smaller than a cent
-is set outright. Nothing about the row's size changes, only the value — a
-changing row height would re-anchor the whole panel on every turn.
-
-### Moving and resizing it
-
-Drag the **middle** of the panel to move it. Drag **any edge or corner** to
-resize it: the pointer turns into a resize arrow over the 16-pixel band around the
-perimeter. Both are saved, and both have their own entry in the right-click
-menu — **Reset position** puts the panel back in the bottom-right corner,
-**Reset size** puts it back to its original size. The two are separate because
-undoing one is rarely a reason to undo the other.
-
-Resizing scales the whole panel — text, padding and width together — rather than
-just stretching the frame. The content is a fixed set of rows, so a wider window
-on its own would only add blank space around numbers that stayed exactly as small.
-The range runs from 0.7× to 3×; a drag that would go past either end stops there.
-
-Pulling any edge **outwards** grows the panel, so up on the top edge and down on
-the bottom do what left and right already did. Height is never set directly — the
-rows are as tall as the font makes them — but a vertical pull is still a perfectly
-good way to say "bigger", which is the single number a resize here produces. A
-pixel means the same amount whichever way you pull, and a corner adds both
-directions, so a diagonal drag grows about twice as fast as a straight one.
-
-While the panel is still anchored in the corner it grows leftwards and upwards
-whichever edge you pull, since the corner owns its position until you move the
-panel yourself. Once you have placed it, the edge you are *not* holding stays
-where you left it.
-
-## What the graphical session has to provide
-
-The panel is an X11 client on Linux, which is why the pixi task sets
-`GDK_BACKEND=x11`: it has to position itself in a corner and raise itself above
-other windows, and a pure Wayland client may do neither. Under Xorg or XWayland
-that works; under plain Wayland the panel can end up running with no visible
-effect. On Windows it uses GDK's win32 backend, which needs no such coaxing —
-there is no equivalent setting there and none is wanted, since forcing x11 would
-leave the panel no display to open.
-
-## Install, in detail
-
-`install-hooks` edits `~/.claude/settings.json` for you because the hooks must
-be registered by absolute path, which is the one thing that cannot be committed
-to the repo — it differs on every machine. It backs the file up first, merges
-rather than replacing, and is safe to run twice. The result looks like this,
-with your own path:
-
-```json
-"Stop": [
-  {"hooks": [{"type": "command", "command": "\"<repo>/hooks/tally.sh\"", "timeout": 20}]}
-],
-"SessionStart": [
-  {
-    "matcher": "startup|resume|clear|compact",
-    "hooks": [{"type": "command", "command": "\"<repo>/launch_widget.sh\"", "timeout": 30}]
-  }
-]
-```
-
-The `matcher` is not decoration: a `SessionStart` group registered without one
-is not reliably run, and the symptom is indistinguishable from a broken panel —
-the hook writes nothing and exits 0 whatever happens. The 30-second budget is
-for the worst case rather than the normal one, which is about a second: the
-first run after a reboot pays for pixi starting, an interpreter booting and a
-virus scanner reading a few hundred megabytes of environment, and a hook killed
-on its timeout dies before it ever reaches the spawn.
-
-The path is written with forward slashes and in quotes on both platforms, and
-neither is cosmetic. Claude Code does not run a registered hook itself — it
-hands the string to `bash -c`, on Windows too, through Git Bash. A backslash is
-an escape character there, so a native Windows path arrives with every
-separator eaten (`C:UsersyouCode...launch_widget.cmd`) and the hook dies with
-`command not found`. Windows accepts forward slashes wherever it takes a path,
-so the one spelling suits both shells. The quotes are for the other half of the
-same problem: unquoted, a repo under `Program Files` or any `My Projects`
-directory would have the shell run the first half of its own path and pass the
-rest as arguments.
-
-Neither failure announces itself — a hook error is non-blocking and both
-wrappers exit 0 by design — so the whole symptom is a panel that never appears
-and numbers that stop moving.
-
-On Windows the entries name `hooks/tally.cmd` and `launch_widget.cmd`. The
-installer picks the pair that matches the platform it is run on; what the two
-wrap is identical, being the same pixi tasks. They differ because their
-contents must: only the Windows pair needs the `PATH` repair that finds pixi
-for a session started before pixi was installed.
-
-The two flags from [Install](#install) and [Uninstall](#uninstall) work on the
-same file. `--autostart` writes an XDG `.desktop` entry on Linux and a `.cmd` in
-your Startup folder on Windows; `--uninstall` removes both hooks and that entry
-again, but only after reading it back and confirming it launches *this*
-checkout.
-
-If you move or rename the repo, re-run `pixi run install-hooks`. It recognises
-its own stale entries and replaces them, which matters: two live `Stop` hooks
-would both run, and the second would find no new messages and overwrite
-**last turn** with `$0.00`.
-
-## Starting and stopping
-
-The two halves are independent of each other: the hook keeps counting whether or
-not the panel is on screen, and the panel keeps rendering whether or not the
-hook is registered (it marks itself stale after ten minutes without an update).
-
-Both do, however, need the pixi environment — every entry point runs through
-`pixi run --frozen`, which uses `pixi.lock` exactly as committed and never
-touches the network. If the environment is missing or out of date, the hook
-stops producing numbers and the panel says so with its `! stale` row rather than
-failing visibly. After editing `pixi.toml`, run `pixi install`.
-
-Start the panel by hand:
-
-```bash
-pixi run start        # detached, whatever auto-launch is set to — the usual one
-pixi run widget       # in the foreground
-pixi run launch       # detached, but obeys a paused auto-launch and stays silent
-```
-
-`pixi run show` is the old name for `start` and still works.
-
-On Linux `pixi run widget` is also how you see the panel's errors. On Windows it
-is not — the task runs `pythonw`, which has nowhere to write them (see below);
-use `pixi run python widget.py` when you want the output.
-
-`pixi run launch` is what the SessionStart hook ends up running, through
-`launch_widget.sh` or `launch_widget.cmd`. It is also the half that
-[can be paused](#keep-the-panel-closed), so a panel you closed stays closed; the
-hook then logs `launch: paused` and does nothing else, and `pixi run widget`
-still brings the panel up by hand. `run_widget.sh` / `run_widget.cmd`
-start the panel in the foreground from outside the pixi environment, which is
-what an autostart entry wants.
-
-On a systemd Linux desktop the launcher starts the panel inside a transient
-scope of its own, via `systemd-run --user --scope`. This is not tidiness, it is
-the only thing that actually detaches it: terminal emulators put each tab in a
-scope with `KillMode=control-group`, and `setsid` escapes a process group and a
-session but never a cgroup, so closing the tab that happened to start the panel
-used to take the panel down with it — silently, since the kill is a SIGTERM from
-systemd. The panel then reappeared at the next `SessionStart`, which looks from
-the outside like it vanishing and returning at random. If the scope will not
-start, the launcher logs that and falls back to a plainly detached child, which
-is better than no panel. There is no equivalent problem on Windows, where a
-`DETACHED_PROCESS` child belongs to nothing that can be closed underneath it.
-
-You can see which scope a panel got with:
-
-```bash
-systemctl --user status "$(cat data/widget.pid)"
-```
-
-On Windows the panel runs under `pythonw.exe`, not `python.exe`. The hook spawns
-it detached, with no console to inherit, and Windows answers that by allocating
-a brand new console for any console-subsystem program — so `python` would leave
-a black window and a `conhost.exe` on screen beside the panel for its whole life.
-`pythonw` is the same interpreter built as a GUI-subsystem binary. The cost is
-that it discards stdout and stderr, which is why `pixi run widget --selftest`
-still goes through `python`.
-
-The panel keeps itself out of the taskbar (and out of Alt-Tab on Windows) by
-asking to be a `UTILITY` window, not by `set_skip_taskbar_hint`, which GDK's
-win32 backend accepts and ignores. On X11 the skip hints do the job and are
-still set; `tests/test_widget.py` checks the outcome on whichever platform it
-runs on rather than trusting either hint.
-
-Stop it with right click → *Quit*.
-
-A running panel holds an exclusive lock on `data/widget.lock` for as long as it
-lives, and the launcher starts one only when it can take that lock itself. So
-closing the panel keeps it closed for the rest of the session, and the next
-session brings it back. The lock rather than a pid, because the kernel retracts
-it however the panel dies: a pid file outlives a hard kill, and Windows will
-hand that same number to something else, which used to suppress the launch in
-every session afterwards.
-
-`data/widget.pid` is still written, now purely so a stuck panel can be found. If
-you ever need to kill it from a shell, use that file rather than matching on the
-process name:
-
-```bash
-kill "$(cat data/widget.pid)"                             # Linux
-```
-```powershell
-Stop-Process -Id (Get-Content data\widget.pid).Trim()     # Windows
-```
-
-Force a recount without waiting for a turn to finish:
-
-```bash
-pixi run tally < /dev/null    # Linux
-```
-```powershell
-$null | pixi run tally        # Windows
-```
-
-Either way the point is the same: `tally` reads the hook payload from stdin, so
-it must be given one that ends rather than a terminal it will wait on.
-
-## Where the limit figures come from
-
-How much of each limit the **account** has used is a fact only the server has, and
-two things ask it for the panel:
-
-- **the panel itself**, once a minute, with `GET /api/oauth/usage` — the request
-  Claude Code makes internally (its bundle calls it `fetchUtilization`), using the
-  subscription token Claude Code already keeps in `~/.claude/.credentials.json`.
-  The answer lands in `data/usage.json`.
-- **Claude Code**, which asks on a session start and when you run `/usage`, and
-  caches its answer in `~/.claude.json` under `cachedUsageUtilization`.
-
-Both files carry the same shape, and the panel reads whichever was fetched more
-recently. So the second is a fallback rather than a redundancy: with the poll
-turned off, after a suspend, or while the network is unreachable, Claude Code's
-cache is the fresher of the two and the rows quietly come from there.
-
-**This is the one part of the tool that opens a socket**, and it is a read: one
-GET, no query, nothing about your machine in it. The token is read on every fetch
-because Claude Code rewrites that file whenever it refreshes it — and it is only
-ever read. Nothing here writes credentials, nothing logs a token, and the
-`refreshToken` sitting beside it is deliberately never used: refreshing may rotate
-it, and rotating it behind Claude Code's back could log you out of the tool this
-panel exists to measure. An expired token simply means the fetch is skipped.
-
-**The endpoint is undocumented and may change without notice.** That is why every
-failure ends in the behaviour the panel had before it: nothing written, no error on
-screen, and rows reading Claude Code's cache. It is also rate-limited — five-second
-polling earned `429 Retry-After: 196` — so a refusal is obeyed for exactly as long
-as it asks, and other failures back off by doubling, up to ten minutes. `data/cost-meter.log`
-records each failed fetch, which is where an endpoint that has moved for good shows up.
-
-Three things are checked before a figure is shown, each for a way it could be
-confidently wrong:
-
-- **The account.** Each file records which account it describes — Claude Code
-  stamps its cache, and the panel stamps what it fetches. After logging in as
-  somebody else the old figures would otherwise be presented as the new account's;
-  on a mismatch they are dropped. Claude Code makes the same check.
-- **The window.** Each row carries its own reset time, and once that has passed
-  the figure describes a window that no longer exists. Age cannot detect this — a
-  four-hour-old weekly figure is fine, a twenty-minute-old 5-hour figure is
-  worthless if the block turned over in between — so the reset time is what
-  decides.
-- **Sanity.** Past a week the figure is refused outright: the weekly window has
-  certainly reset by then, so no floor survives it. This is deliberately *not*
-  Claude Code's own one-hour threshold — it discards a figure it can re-fetch at
-  will, and the panel's own fetch may be the thing that is failing.
-
-**A 5-hour block turning over mid-session used to leave the row on dollars until
-the next `/usage`.** The old percentage is withdrawn the moment its window ends,
-correctly — it describes a window that is gone — and the new window's percentage
-was a fact only the server had, which nothing asked it for until a session started
-or you typed `/usage`. So a block that turned over at lunchtime could leave the 5h
-row showing dollars all afternoon. The panel's own poll is what closes that: the
-new window's figure arrives within the minute, unasked.
-
-**The panel reads both files itself**, rather than the copy the hook writes into
-`state.json` — which only moves when a turn lands, and the things that move a
-percentage have nothing to do with turns. The copy is still written, because
-`tally` needs the reset times to anchor the dollar windows; the panel deliberately
-ignores it.
-
-Three things bring a new figure to the row, and they cover different failures.
-The **once-a-minute fetch** is the ordinary one. A **file monitor** on Claude
-Code's cache repaints the moment that file is written, which matters after a
-`/usage`: the panel is usually right beside the output you are comparing it
-against. The **60-second staleness poll** catches what no file change announces —
-a window reaching its `resets_at`, where the row has to be withdrawn with nothing
-having been written anywhere.
-
-The previous design derived these percentages instead, by dividing locally
-recorded spend by a ceiling you calibrated against a `/usage` reading. That is
-gone, and so are `pixi run calibrate` and `pixi run limit`. It had two failures
-this does not: the ratio paired one machine's dollars with the whole account's
-percentage, so it was wrong by however much work happened elsewhere; and a
-ceiling silently expired whenever a plan changed or a promotion moved the limit,
-with nothing on screen to say so.
-
-The dollar rows are still measured in USD-equivalent rather than raw tokens,
-because the models draw on the limit unevenly — an Opus token costs the limit more
-than a Sonnet token — and pricing already carries those per-model weights.
-
-## Pricing
-
-`pricing.json`, at the repo root, carries the current published rate per
-million tokens (input and output) for each model you use. Edit it directly
-whenever Anthropic changes its rates.
-
-One rate in that table has a known expiry date: `claude-sonnet-5` is priced
-at its **introductory** rate of $2.00 / $10.00, which is in force only
-through **2026-08-31**. From 2026-09-01 the sticker price of $3.00 / $15.00
-applies and the two numbers need editing by hand. Nothing in the tool tracks
-this — there is deliberately no dated-override mechanism, so the table says
-what you tell it and the calendar is yours to watch.
-
-The lookup is an **exact string match** against whatever the transcript
-records — there is no alias resolution, and none is wanted: guessing that
-`claude-haiku-4-5-20251001` means the same thing as `claude-haiku-4-5` is
-exactly the kind of inference that would silently misprice a model one day.
-Claude Code is not consistent about which form it writes, which is why Haiku
-4.5 appears twice at the same published rate: the dated id is what the
-transcripts carry today, and the bare alias is there so the panel keeps
-pricing it rather than falling back to a `?` if that ever changes.
-
-A model that has no entry in this table is **never** treated as free. It is
-excluded from the priced totals and instead surfaces as a `?` warning row on
-the panel, so a pricing gap is visible rather than silently undercounting
-your spend.
-
-## Known limitations
-
-- **The dollar rows count one machine, not a subscription.**
-  `~/.claude/projects/` on the computer the tool runs on is their entire input, so
-  they are a per-installation view of usage that is really billed per
-  subscription. Nothing warns you about the gap — invisible usage is
-  indistinguishable from no usage. Running the tool on each machine you use gives
-  each one its own honest local ledger, but does not add them up; there is
-  deliberately no shared store, because merging ledgers across machines means
-  reconciling clocks and de-duplicating sessions, which is a much larger tool than
-  this one. The limit rows are unaffected: they come from the account.
-- **The limit percentages are a minute old, and depend on an undocumented
-  endpoint.** The panel fetches them itself once a minute; when that fails —
-  offline, an expired token, a rate limit, or the endpoint changing — it falls
-  silently back to whatever Claude Code last cached, which can be hours old with
-  nothing on the row to distinguish the two cases. The `≈` covers both, because
-  usage within a window only grows and an old percentage is still a genuine floor.
-  The age is in the tooltip when you want to know which case you are in, and
-  `data/cost-meter.log` names the failure.
-- **A whole percentage point is the finest the server reports.** The figures arrive
-  as integers, so the rows step rather than glide however often they are fetched,
-  and the two limit rows are deliberately left out of the panel's rolling
-  animation for that reason.
-- **USD here is an API-equivalent, not an invoice** — on a seat. The dollar
-  figures are then a consistent way to compare and weight usage, not a bill you
-  will actually receive. The **billing** row says which case you are in, but it
-  reports only the mode: on API billing the figures are the right *kind* of
-  number, and still not an invoice, since they come from published rates rather
-  than from Anthropic's meter.
-- **The billing row cannot be backfilled and describes the last writer.** The
-  mode is not in the transcripts — `usage.service_tier` names the API's latency
-  tier and reads `standard` either way — so it is observed by the `Stop` hook in
-  its own session's environment. Turns priced before the row existed carry no
-  mode and never will, and with several sessions running under different
-  credentials the row describes whichever wrote most recently.
-- **Fast mode is priced as though it were standard.** The transcripts do record
-  which speed served each message, in `usage.speed`, but nothing here reads that
-  field and `pricing.json` carries no fast-mode rates. Since Opus 5 fast mode
-  costs $10.00 / $50.00 against the standard $5.00 / $25.00, a fast turn would
-  be understated by half. Fast mode is not currently in use — every record in
-  the transcripts reads `standard` — so this costs nothing today, but it would
-  if that changed.
-- **Both *dollar* windows are only as well-placed as the reset the server last
-  reported.** With one, they are the five hours and the seven days ending at it,
-  which is why the **this machine** row empties exactly when the percentage above
-  it does. Without one — no cached figures at all — they fall back to a trailing
-  seven days and a block anchored on this machine's own first message, and then
-  the weekly figure keeps a tail the real limit has already reset past. The window
-  *length* is assumed either way: the server sends only the end.
-- **The 5h *dollar* figure falls back to a guess when no account figure is
-  available.** Normally the server's reset time bounds it. Without one, the tool
-  anchors the block on the first Claude Code message it can see, which is later
-  than the real start whenever the block was opened elsewhere — another machine,
-  or Claude on claude.ai, which shares the same pool and writes nothing here. The
-  figure then covers too little.
-- **Server-side tool use is not counted.** Web search is billed per thousand
-  searches rather than per token, and those counts (`usage.server_tool_use`)
-  are ignored. They are zero across every transcript on the machine this was
-  built for.
-- **`/usage` and the panel now agree by construction**, because they read the
-  same file, and the panel watches it — so a `/usage` reaches the rows as it is
-  written, without waiting for a turn.
-
-## Files
-
-Everything runtime-owned lives under `data/`, and is safe to delete wholesale
-(see below):
-
-- `events.jsonl` — append-only ledger of priced messages, pruned to the
-  trailing 8 days.
-- `state.json` — the dollar figures the widget displays, the `billing` mode the
-  hook observed in its own session's environment, and a copy of the account's
-  limit rows under `limits` (with the age of the figures they came from). The
-  widget does not read that copy — it goes to the two live sources below;
-  `tally` keeps it because the reset times in it anchor the dollar windows.
-- `usage.json` — the account's limit percentages as the panel last fetched them
-  from the server, in the same shape Claude Code caches in `~/.claude.json`, with
-  the account it belongs to and when it was fetched. The panel writes it once a
-  minute and reads whichever of the two files is newer.
-- `offsets.json` — per-transcript file read positions, so re-running the
-  scan never re-reads or double-counts a line.
-- `session_marks.json` — one bookmark per session recording the newest event
-  already reported as that session's **last turn**. This is what keeps the
-  row correct when several Claude Code sessions run at once: whichever hook
-  fires first picks up every session's new messages, so "new since my own
-  last run" has to be remembered per session rather than inferred from which
-  run happened to append the events. Bookmarks for sessions idle longer than
-  the 8-day prune window are dropped.
-- `config.json` — the widget's last window position and size
-  (`widget_position`, `widget_scale`), `autolaunch_paused` when sessions are not
-  allowed to open the panel, and `usage_poll_seconds` when the limit fetch should
-  run at something other than once a minute (`0` switches it off).
-- `widget.lock` — held exclusively by the running panel for as long as it
-  lives. This is how the launcher tells whether one is already up; the kernel
-  drops it however the panel dies, including a hard kill.
-- `widget.pid` — the running panel's pid, so a stuck one can be found and
-  killed. Diagnostic only: a pid cannot answer the liveness question honestly on
-  Windows, which reuses the numbers.
-- `cost-meter.log` — where the `Stop` hook and the `SessionStart` hook record
-  what they swallowed to keep your critical path unbroken. The launcher also logs
-  the boring outcomes (`launch: spawned`,
-  `launch: already running`, `launch: paused`), because a hook that ran and
-  decided to do nothing and a hook that never ran are otherwise
-  indistinguishable.
-
-Deleting `data/` entirely is a safe full reset: the next run rebuilds
-`events.jsonl` and `state.json` from the real transcripts under
-`~/.claude/projects/` from scratch. You lose the saved window position and size,
-a paused auto-launch and a custom poll interval, nothing else — the limit
-percentages are unaffected, since the next fetch is a minute away and Claude
-Code's own cache answers in the meantime. With the bookmarks
-gone too, the first turn after a reset reads as the whole session's cost, since
-there is no earlier mark to measure from; it corrects itself on the next turn.
-
-## Development
-
-```bash
-pixi run test     # unit tests only, against a throwaway data directory
-pixi run smoke    # tests, a real GTK render, and the fault-logging check
-```
-
-`pixi run smoke` skips the render step, out loud, when there is no display, so
-it stays usable over SSH. `xvfb-run pixi run smoke` exercises it anyway, using
-your distribution's Xvfb — conda-forge has no Xvfb package, so it is not one of
-this project's dependencies. On Windows there is always a display, so the step
-always runs.
-
-Both tasks are Python (`run_tests.py`, `smoke.py`) rather than shell, so the two
-platforms run the same check rather than a pair of twins that can drift.
-
-## Troubleshooting
-
-- **The widget stops updating** — the panel says so itself: every dollar row
-  greys out and the warning row shows how long it has been (`! stale 1 h
-  37 min`). The limit percentages carry on regardless; they do not come from the
-  hook. Check `data/cost-meter.log`. Every fault on the `Stop` hook's
-  critical path is caught and logged there rather than shown, by design, so a
-  stuck panel almost always has a line waiting there. If the log is empty, the
-  hook is not reaching Python at all: run `hooks/tally.sh` (or `hooks\tally.cmd`)
-  by hand and check that `pixi run --frozen tally` works from the repo.
-- **Numbers look lower than expected** — check the panel for a `?` warning
-  row. It means at least one model you used has no entry in `pricing.json`
-  and is being excluded from the totals rather than counted as zero.
-- **The panel vanishes mid-session and comes back later, on Linux** — it was
-  killed with the terminal tab that started it, and came back at the next
-  `SessionStart` (a new session, a resume, a `/clear`, or an auto-compact, which
-  is why it can look like it returns when a long task finishes). Fixed by
-  launching into a scope of the panel's own; if you still see it, check whether
-  the launcher had to fall back — `data/cost-meter.log` says
-  `launch: scope spawn exited immediately` when it did — and compare
-  `systemctl --user status "$(cat data/widget.pid)"` against the tab you are
-  typing in. A panel sharing a `ptyxis-spawn-…` or `vte-spawn-…` scope with a
-  shell is one that will die with that shell.
-- **The panel is invisible, on Linux** — confirm the pixi `widget` task's
-  `GDK_BACKEND=x11` took effect and you are on Xorg or XWayland. A pure Wayland
-  client cannot position itself in a corner or raise itself above other windows,
-  so under plain Wayland the panel can end up running with no visible effect.
-  There is no such setting on Windows and none is wanted: GDK's only backend
-  there is win32, and forcing x11 would leave the panel no display to open.
-- **Nothing happens at session start** — read `data/cost-meter.log` first. The
-  launcher exits 0 and prints nothing whatever happens, deliberately, so the log
-  is the only place that distinguishes the three cases: `launch: spawned` (it
-  started something, and the problem is further along), `launch: already
-  running` (it decided a panel was up), and `launch: failed` with the exception.
-  **No line at all means the hook never ran** — check that `SessionStart` in
-  `~/.claude/settings.json` carries its `matcher`, and that its `command` is a
-  quoted forward-slash path rather than a native Windows one. A backslash path
-  is eaten by the shell Claude Code runs hooks in, which reports
-  `command not found` where only the session transcript can see it. Re-run
-  `pixi run install-hooks` for either; it recognises and replaces the old
-  entry rather than adding a second one.
-  On Windows the other usual cause is `pixi` not being on `PATH` for the hook,
-  because Claude Code was started before pixi was installed and a `PATH` change
-  does not reach a running process. Restart Claude Code. That one also leaves no
-  log line, and you can tell the two apart by running the wrapper by hand:
-  `launch_widget.cmd` writes a line if it reaches Python, and returns in well
-  under a second without one if it never found pixi.
-- **A black console window next to the panel, on Windows** — the panel is being
-  run by `python.exe` instead of `pythonw.exe`. Check the `widget` task under
-  `[target.win-64.tasks]` in `pixi.toml`. A detached process has no console to
-  inherit, and Windows gives any console-subsystem program one of its own.
-- **A taskbar button for the panel, on Windows** — the `UTILITY` type hint in
-  `widget.py` is not reaching the window. `pixi run test` says so directly:
-  `test_windows_gives_it_no_taskbar_button` reads the real window back and fails
-  if it is not a tool window. Note that changing the hint to the more accurate
-  `DOCK` reintroduces exactly this, since win32 gives `DOCK` no tool-window
-  style.
+reset (see [Files](docs/REFERENCE.md#files)).
