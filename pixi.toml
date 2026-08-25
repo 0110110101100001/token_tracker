@@ -8,7 +8,8 @@
 
 [workspace]
 name = "token-calculator"
-version = "0.1.0"
+# Kept in step with the release tags: v1.1 is this.
+version = "1.1"
 description = "Always-on-top GTK panel showing what Claude Code work costs"
 channels = ["conda-forge"]
 # One lock file covers both platforms; pixi solves them together. Adding
