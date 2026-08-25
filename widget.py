@@ -24,8 +24,8 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from cost_meter import (autolaunch, paths, roll, store, summary,  # noqa: E402
-                        usage_api, utilization)
+from cost_meter import (autolaunch, log, paths, roll, store,  # noqa: E402
+                        summary, usage_api, utilization)
 
 MARGIN = 24
 WIDTH = 240
@@ -1244,9 +1244,12 @@ def claim_liveness_lock():
     the numbers: one unrelated process landing on a dead panel's number was
     enough to suppress the launch in every session afterwards.
 
-    None means somebody else holds it — a panel started by hand alongside the
-    one already up. That is allowed; it simply is not the one whose exit frees
-    the lock.
+    None means a panel is already up, and main() exits on it rather than opening
+    a second one. Two panels used to be allowed here on the grounds that only a
+    human starting one by hand could reach it; the launcher's unavoidable gap
+    between looking at this lock and the spawned panel taking it meant two
+    hooks reached it too, and one of them was always a duplicate nobody asked
+    for.
     """
     return store.try_acquire(paths.widget_lock_path())
 
@@ -1293,18 +1296,32 @@ def main():
     if args.selftest:
         return selftest(args.selftest)
 
-    CostMeter().show_all()
-    # Taken before the pid is written and given back after it is removed, so
-    # there is no instant where a launcher can see the claim gone while this
-    # panel is still on screen.
+    # Claimed before anything is built, and a failed claim ends the run. The
+    # claim is the only place a second panel can be stopped: cost_meter/launch.py
+    # looks at the same lock, but it cannot look and spawn in one step -- the
+    # panel it starts needs a nested `pixi run` and GTK startup, seconds, before
+    # it claims anything, and two SessionStart hooks firing that close together
+    # (Claude Desktop fires two per code-mode session) both find the lock free
+    # and both spawn. Whoever loses here costs a wasted interpreter; before this
+    # it cost a second window that stayed for the whole session.
+    #
+    # Before the window rather than after, so the loser never flashes one, and
+    # before the pid file so it cannot clear the winner's claim on its way out --
+    # `launch: already running (pid None)` in the log was exactly that.
     handle = claim_liveness_lock()
+    if handle is None:
+        log.write("widget: another panel holds the lock, exiting")
+        return 0
+    CostMeter().show_all()
+    # The pid is written inside the claim and removed before it is given back,
+    # so there is no instant where a launcher can see the claim gone while this
+    # panel is still on screen.
     write_pid()
     try:
         Gtk.main()
     finally:
         clear_pid()
-        if handle is not None:
-            store.release(handle)
+        store.release(handle)
     return 0
 
 

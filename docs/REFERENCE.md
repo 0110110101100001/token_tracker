@@ -89,6 +89,11 @@ pixi run launch       # detached, but obeys a paused auto-launch and stays silen
 
 `pixi run show` is the old name for `start` and still works.
 
+None of the three opens a second panel while one is up: `start` and
+`launch` say `launch: already running` and stop, and `widget` — which has
+no launcher in front of it — exits as soon as it finds `widget.lock`
+taken, before it draws anything.
+
 On Linux `pixi run widget` is also how you see the panel's errors. On Windows it
 is not — the task runs `pythonw`, which has nowhere to write them ([why](PANEL.md#how-the-panel-detaches-from-what-started-it)); use
 `pixi run python widget.py` when you want the output.
@@ -162,8 +167,12 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   paused auto-launch, and a custom poll interval for the limit fetch. Every key is
   listed under [Configuration](#configuration).
 - `widget.lock` — held exclusively by the running panel for as long as it
-  lives. This is how the launcher tells whether one is already up; the kernel
-  drops it however the panel dies, including a hard kill.
+  lives. This is how the launcher tells whether one is already up, and it is what
+  keeps there being exactly one: a panel that cannot take the lock at startup
+  exits before it draws anything. The launcher's check cannot stand alone, because
+  the panel it spawns takes seconds to reach that claim and a second hook firing
+  inside that gap finds the lock free. The kernel drops it however the panel dies,
+  including a hard kill.
 - `widget.pid` — the running panel's pid, so a stuck one can be found and
   killed. Diagnostic only: a pid cannot answer the liveness question honestly on
   Windows, which reuses the numbers.
@@ -172,7 +181,11 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   the boring outcomes (`launch: spawned`,
   `launch: already running`, `launch: paused`), because a hook that ran and
   decided to do nothing and a hook that never ran are otherwise
-  indistinguishable.
+  indistinguishable. A panel that found the lock taken and stood down says so
+  too (`widget: another panel holds the lock, exiting`, and
+  `launch: another panel won the race` from the launcher that started it) —
+  expect one of each per session on a front end that starts two sessions at
+  once, which is what Claude Desktop does in code mode.
 
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under

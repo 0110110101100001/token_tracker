@@ -20,6 +20,7 @@ tested rather than eyeballed:
 import contextlib
 import io
 import os
+import subprocess
 import tempfile
 import unittest
 
@@ -223,6 +224,98 @@ class FakeChild:
     """Enough of a Popen for the log line that names its pid."""
 
     pid = 4242
+
+
+class ExitedChild:
+    """A spawn that was over before we looked -- what a failed scope leaves."""
+
+    pid = 4243
+
+    def wait(self, timeout=None):
+        return 0
+
+
+class LiveChild:
+    """A spawn still running when we looked -- what a scope that took looks like."""
+
+    pid = 4244
+
+    def wait(self, timeout=None):
+        raise subprocess.TimeoutExpired("systemd-run", timeout)
+
+
+class ScopeFallbackTest(TempHome):
+    """When a scope spawn is over immediately, whether to try again without one.
+
+    The immediate exit used to mean one thing: systemd-run could not reach the
+    user manager, so a plain detached child is the best available. Since a panel
+    that finds `widget.lock` taken exits at once rather than opening a second
+    window, it means a second thing too -- and that one is not a failure, it is
+    the race being settled. Retrying then spawns another panel that will stand
+    down exactly the same way, and files a systemd complaint about it in the log
+    for somebody to chase later.
+
+    So the lock decides which of the two it was.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.spawned = []
+        for name, value in (("systemd_available", lambda: True),
+                            ("_spawn", self.record)):
+            real = getattr(launch, name)
+            setattr(launch, name, value)
+            self.addCleanup(setattr, launch, name, real)
+
+    def record(self, command, cwd):
+        self.spawned.append(command)
+        return self.children.pop(0)
+
+    def use_panel_probe(self, *answers):
+        """Answer the liveness probe once per call, last answer repeating.
+
+        A sequence rather than one value because the race needs both: the
+        launcher looks, finds nothing, spawns -- and by the time the spawn is
+        over a rival's panel holds the lock. One fixed answer can only express
+        one of those two moments.
+        """
+        answers = list(answers)
+        real = launch.panel_is_running
+        launch.panel_is_running = lambda: (answers.pop(0) if len(answers) > 1
+                                           else answers[0])
+        self.addCleanup(setattr, launch, "panel_is_running", real)
+
+    def test_a_scope_that_took_is_the_panel(self):
+        self.children = [LiveChild()]
+        child = launch.spawn_detached(["pixi"], ".")
+        self.assertIsInstance(child, LiveChild)
+        self.assertEqual(len(self.spawned), 1)
+
+    def test_a_failed_scope_is_retried_without_one(self):
+        self.children = [ExitedChild(), FakeChild()]
+        self.use_panel_probe(False)
+        child = launch.spawn_detached(["pixi"], ".")
+        self.assertIsInstance(child, FakeChild)
+        self.assertEqual(len(self.spawned), 2)
+        self.assertIn("scope spawn exited immediately", self.log_text())
+
+    def test_a_panel_standing_down_for_another_is_not_retried(self):
+        self.children = [ExitedChild()]
+        self.use_panel_probe(True)
+        self.assertIsNone(launch.spawn_detached(["pixi"], "."))
+        self.assertEqual(len(self.spawned), 1)
+        self.assertNotIn("scope spawn exited immediately", self.log_text())
+
+    def test_the_launcher_reports_standing_down_rather_than_a_pid(self):
+        # Nothing was up when the launcher looked; something is by the time its
+        # spawn is over. That is the race as the hook actually meets it.
+        self.children = [ExitedChild()]
+        self.use_panel_probe(False, True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(launch.main(["--force"]), 0)
+        self.assertIn("another panel", out.getvalue())
+        self.assertNotIn("spawned", out.getvalue())
 
 
 class CommandLineTest(TempHome):

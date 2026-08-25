@@ -18,6 +18,7 @@ selftest in smoke.py, where a headless box has no taskbar to be in either.
 
 import ctypes
 import os
+import sys
 import time
 import unittest
 import unittest.mock
@@ -1223,6 +1224,55 @@ class ScaleMemoryTest(unittest.TestCase):
         self.window.remember_scale()
         config = store.read_json(paths.config_path(), default={}) or {}
         self.assertEqual(config.get("widget_position"), [7, 9])
+
+
+
+class SecondPanelTest(TempHome):
+    """A panel that cannot claim the liveness lock exits before it draws.
+
+    The lock is the only honest answer to "is a panel already up", and the
+    launcher cannot ask it atomically: it looks, finds the lock free, and spawns
+    a panel that takes seconds -- a nested `pixi run` and GTK startup -- to
+    claim it. Claude Desktop fires the SessionStart hook twice per code-mode
+    session, close enough together that both invocations looked into that gap
+    and both spawned. Two panels then stayed on screen, because a failed claim
+    used to be tolerated here.
+
+    So the claim decides, and it is made before anything is built: the loser
+    costs a wasted interpreter, never a second window.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Gtk.main is stubbed for the whole class, including the tests that
+        # expect never to reach it: a panel that wrongly kept going would
+        # otherwise enter the real main loop and hang the run rather than fail
+        # it, which is exactly how this bug looked from the outside.
+        for patch in (unittest.mock.patch.object(sys, "argv", ["widget.py"]),
+                      unittest.mock.patch.object(widget.Gtk, "main")):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_a_panel_that_loses_the_lock_exits_without_building_a_window(self):
+        handle = store.try_acquire(paths.widget_lock_path())
+        self.addCleanup(store.release, handle)
+        with unittest.mock.patch.object(widget, "CostMeter") as panel:
+            self.assertEqual(widget.main(), 0)
+        panel.assert_not_called()
+
+    def test_a_panel_that_loses_the_lock_leaves_the_winners_pid_file_alone(self):
+        paths.pid_path().write_text("4242\n", encoding="utf-8")
+        handle = store.try_acquire(paths.widget_lock_path())
+        self.addCleanup(store.release, handle)
+        with unittest.mock.patch.object(widget, "CostMeter"):
+            widget.main()
+        self.assertEqual(paths.pid_path().read_text(encoding="utf-8").strip(),
+                         "4242")
+
+    def test_the_panel_that_takes_the_lock_builds_its_window(self):
+        with unittest.mock.patch.object(widget, "CostMeter") as panel:
+            self.assertEqual(widget.main(), 0)
+        panel.assert_called_once_with()
 
 
 if __name__ == "__main__":

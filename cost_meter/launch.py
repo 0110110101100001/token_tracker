@@ -130,10 +130,19 @@ def spawn_detached(command, cwd):
             status = child.wait(timeout=SCOPE_WAIT_SECONDS)
         except subprocess.TimeoutExpired:
             return child  # still running, so the scope took and it is the panel
-        # Exited already. Whether systemd-run could not reach the user manager or
-        # the panel itself died on startup is not knowable from here, so the log
-        # says what happened rather than guessing why, and we try the plain spawn
-        # instead of leaving the user with no panel at all.
+        # Exited already, which is two different events wearing one face. The
+        # panel this scope started may have found widget.lock taken and stood
+        # down -- a rival hook's panel won the race, and that is settled, not
+        # broken. Retrying then spawns another panel to lose the same way and
+        # files a systemd complaint for somebody to chase. The lock tells the
+        # two apart: if a panel is up, it does not matter whose.
+        if panel_is_running():
+            return None
+        # Nothing is up, so this was the scope failing. Whether systemd-run
+        # could not reach the user manager or the panel died on startup is not
+        # knowable from here, so the log says what happened rather than guessing
+        # why, and we try the plain spawn instead of leaving the user with no
+        # panel at all.
         log.write(f"launch: scope spawn exited immediately (rc {status}), "
                   f"retrying without a scope")
     return _spawn(command, cwd)
@@ -202,6 +211,13 @@ def main(argv=None):
             return 0
         child = spawn_detached([shutil.which("pixi") or "pixi", *WIDGET_TASK],
                                paths.project_root())
+        if child is None:
+            # The panel we spawned stood down because another one had already
+            # taken the lock. Two hooks firing at once both get this far -- the
+            # check above cannot be atomic, since the panel it starts needs
+            # seconds to claim anything -- and this is the loser saying so.
+            announce("launch: another panel won the race")
+            return 0
         # The pixi shim's pid, not the panel's -- the panel records its own in
         # widget.pid once it is up. Both are worth having: if the second never
         # appears, the first says the spawn was not where it broke.
