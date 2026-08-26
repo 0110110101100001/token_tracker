@@ -31,6 +31,14 @@ refreshes the percentages once, but they stand still again afterwards. The dolla
 rows are unaffected. Detail in
 [Where the limit figures come from](docs/METERING.md#where-the-limit-figures-come-from). Similar issue is for billing row (API/team)
 
+## Known issue in this version: Windows Smart App Control
+
+**On Windows with Smart App Control enforcing, `epoxy-0.dll` is blocked and the
+panel dies on `import gi`** — `pixi.toml` pins `epoxy` on win-64 to a build
+revision it trusts, so if the panel stops starting again, read
+`data/widget-output.log` and move that pin (`pixi search epoxy --platform
+win-64`).
+
 ## Install
 
 You need [pixi](https://pixi.sh) and Claude Code. Nothing else has to be

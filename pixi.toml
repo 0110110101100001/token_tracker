@@ -34,6 +34,30 @@ librsvg = "*"
 # GDK's win32 backend reads desktop settings from the registry, not GSettings.
 gsettings-desktop-schemas = "*"
 
+[target.win-64.dependencies]
+# An older build revision of the same libepoxy, and the reason is Smart App
+# Control rather than anything about the library.
+#
+# GDK links libepoxy, and Smart App Control decides per *file* whether it trusts
+# code, from Microsoft's reputation service. The current conda-forge build of
+# epoxy-0.dll has no reputation, so on a machine where Smart App Control is
+# enforcing it is blocked -- and because GDK cannot load without it, the panel
+# dies on `import gi` before it draws anything. Nothing else in the GTK stack is
+# affected; measured, it is this one file.
+#
+# 1.5.10 is the newest upstream libepoxy, so _0, _1 and _2 are the same source
+# built three times. Pinning the build revision therefore costs no library fixes,
+# only a newer toolchain -- which is a cheap price for the panel starting at all.
+#
+# win-64 only, because Smart App Control is the only reason for it and no other
+# platform pays for it.
+#
+# This is a workaround resting on a reputation verdict, not a guarantee: if a
+# future Windows stops trusting this file too, the panel stops starting again and
+# data/widget-output.log will say so in as many words. See the README's known
+# issue for what to do then.
+epoxy = { version = "==1.5.10", build = "*_1" }
+
 [tasks]
 # The full check: unit tests, a real GTK render, and a proof that a genuine
 # fault is logged rather than escaping. This is the task both the project

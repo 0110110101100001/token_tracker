@@ -23,6 +23,12 @@ ran and decided to do nothing is indistinguishable from a hook that never ran at
 all, and telling those two apart is most of the work when the panel fails to
 appear.
 
+That covers what the launcher decided, which is only half of it: the launcher
+can succeed and the panel still die seconds later, on its own, with the log
+reading "spawned pixi pid N" and meaning it. So the panel's own stdout and
+stderr go to widget-output.log rather than to DEVNULL. See
+paths.widget_output_path() for the failure that taught us the difference.
+
 The logic lives here rather than in the shell wrappers because there are two of
 them now. A liveness probe and a detached spawn are both things POSIX shell and
 cmd.exe express completely differently, and maintaining that twice is how the
@@ -30,10 +36,12 @@ two platforms quietly drift apart.
 """
 
 import argparse
+import contextlib
 import os
 import shutil
 import subprocess
 import sys
+import time
 
 from . import autolaunch, log, paths, store
 
@@ -57,6 +65,12 @@ SCOPE_PREFIX = ("systemd-run", "--user", "--scope", "--quiet", "--collect")
 # Long enough for systemd-run to have failed and exited (it takes tens of
 # milliseconds), short enough to be free on a hook that runs once per session.
 SCOPE_WAIT_SECONDS = 0.5
+
+# What the panel's own output may occupy before the next launch starts the file
+# again. Generous for the thing it is for -- a startup traceback is a couple of
+# kilobytes, and a normal launch writes nothing at all -- and small enough that a
+# file nobody thinks to read cannot grow without bound across sessions.
+OUTPUT_LIMIT_BYTES = 64 * 1024
 
 
 def read_pid():
@@ -148,13 +162,60 @@ def spawn_detached(command, cwd):
     return _spawn(command, cwd)
 
 
+@contextlib.contextmanager
+def _output_sink(command):
+    """A file for the child's stdout and stderr, or DEVNULL if we cannot open one.
+
+    DEVNULL on both streams was the old behaviour, and on Windows it made a
+    failed panel undiagnosable for the reason paths.widget_output_path()
+    describes. Redirecting to a real file costs nothing on a path that runs once
+    per session, and is the whole difference between "spawned pixi pid N" and a
+    stack trace naming the line.
+
+    That pythonw writes here at all was verified rather than assumed: it has no
+    console, but it uses valid standard handles normally when the parent supplies
+    them, and discards output only because a detached process is given none.
+
+    Append rather than truncate, so the scope retry in spawn_detached keeps both
+    attempts instead of the second erasing the first evidence of why there was a
+    retry. The file is started again only once it has outgrown the cap.
+
+    Failing to open it must not cost the user a panel -- a full disk or a
+    read-only tree is not a reason to refuse to start -- so that path yields
+    DEVNULL and the launch proceeds exactly as it did before.
+    """
+    try:
+        path = paths.widget_output_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > OUTPUT_LIMIT_BYTES:
+            path.unlink()
+        handle = open(path, "a", encoding="utf-8")
+    except OSError:
+        yield subprocess.DEVNULL
+        return
+    try:
+        # Flushed before the child can start, because the child inherits the OS
+        # handle and not this buffer: an unflushed header lands *after* the
+        # output it is supposed to head.
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+        header = " ".join(str(part) for part in command)
+        # print rather than write: it supplies the newlines itself, and the
+        # blank line keeps one launch visually separate from the last.
+        print(file=handle)
+        print("===", stamp, header, file=handle)
+        handle.flush()
+        yield handle
+    finally:
+        # Ours only. subprocess gave the child its own copy, which stays open
+        # for as long as the panel runs.
+        handle.close()
+
+
 def _spawn(command, cwd):
     """Detach a child as far as this platform alone allows."""
     kwargs = {
         "cwd": str(cwd),
         "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
     }
     if os.name == "nt":
         # DETACHED_PROCESS gives the child no console at all, which is the
@@ -171,7 +232,8 @@ def _spawn(command, cwd):
                                    | subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         kwargs["start_new_session"] = True  # setsid: survive the hook's group
-    return subprocess.Popen(command, **kwargs)
+    with _output_sink(command) as sink:
+        return subprocess.Popen(command, stdout=sink, stderr=sink, **kwargs)
 
 
 def build_parser():

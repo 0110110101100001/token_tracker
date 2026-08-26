@@ -73,6 +73,25 @@ def log_path():
     return home() / "cost-meter.log"
 
 
+def widget_output_path():
+    """Where the panel's own stdout and stderr land.
+
+    Separate from log_path() because the two have different authors and
+    different lifetimes. That file is this tool's own account of what it
+    decided, one line per decision, and it is meant to be kept. This one is
+    whatever GTK, pixi and the interpreter said on the panel's way up -- almost
+    always nothing, occasionally a traceback -- and it is started again once it
+    outgrows a session's worth.
+
+    It exists because of a failure that had no trace anywhere. On Windows the
+    panel runs under pythonw, which a detached process leaves with no console,
+    so a crash during startup wrote its traceback to a discarded handle. The log
+    said the spawn succeeded -- it had -- and the panel simply never appeared,
+    which from the outside is indistinguishable from a hook that never ran.
+    """
+    return home() / "widget-output.log"
+
+
 def pricing_path():
     return project_root() / "pricing.json"
 

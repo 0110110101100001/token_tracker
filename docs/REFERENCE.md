@@ -186,6 +186,9 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   `launch: another panel won the race` from the launcher that started it) —
   expect one of each per session on a front end that starts two sessions at
   once, which is what Claude Desktop does in code mode.
+- `widget-output.log` — whatever the panel itself said on the way up: a `===`
+  header per launch, pixi's chatter, GLib warnings, and a traceback if it died;
+  disposable, and started again once it passes 64 KiB.
 
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
@@ -232,6 +235,10 @@ Delete the file to reset all of them.
   `systemctl --user status "$(cat data/widget.pid)"` against the tab you are
   typing in. A panel sharing a `ptyxis-spawn-…` or `vte-spawn-…` scope with a
   shell is one that will die with that shell.
+- **Nothing appears at all, on Windows, and `data/widget-output.log` ends in an
+  `AssertionError` from `gi/overrides/Gdk.py`** — Smart App Control is blocking
+  a GTK DLL pixi installed, so the `epoxy` pin in `pixi.toml` needs moving to
+  another build revision (`pixi search epoxy --platform win-64`).
 - **The panel is invisible, on Linux** — confirm the pixi `widget` task's
   `GDK_BACKEND=x11` took effect and you are on Xorg or XWayland. A pure Wayland
   client cannot position itself in a corner or raise itself above other windows,
@@ -241,8 +248,9 @@ Delete the file to reset all of them.
 - **Nothing happens at session start** — read `data/cost-meter.log` first. The
   launcher exits 0 and prints nothing whatever happens, deliberately, so the log
   is the only place that distinguishes the three cases: `launch: spawned` (it
-  started something, and the problem is further along), `launch: already
-  running` (it decided a panel was up), and `launch: failed` with the exception.
+  started something, and the problem is further along — read
+  `data/widget-output.log`), `launch: already running` (it decided a panel was
+  up), and `launch: failed` with the exception.
   **No line at all means the hook never ran** — check that `SessionStart` in
   `~/.claude/settings.json` carries its `matcher`, and that its `command` is a
   quoted forward-slash path rather than a native Windows one. A backslash path

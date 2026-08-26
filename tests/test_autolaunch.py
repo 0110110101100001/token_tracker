@@ -21,6 +21,7 @@ import contextlib
 import io
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -360,3 +361,75 @@ class CommandLineTest(TempHome):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PanelOutputTest(TempHome):
+    """The panel's own stdout and stderr must end up somewhere a reader can find.
+
+    Regression test with a real cause, and one that cost a diagnosis. On Windows
+    the panel runs under pythonw with no console, so every word it said on the
+    way up went to a discarded handle. When Smart App Control started blocking
+    the unsigned GTK DLLs in the pixi environment, the panel died on `import gi`
+    before it could draw anything -- and the only trace of it anywhere was
+    cost-meter.log saying `launch: spawned pixi pid N`, which was true. The
+    launcher had done its job perfectly; nothing had recorded that the panel
+    then fell over.
+
+    These exercise `_spawn` rather than `spawn_detached`, deliberately: the
+    redirect lives in the former, and the latter adds a systemd scope on Linux
+    that would make the same assertions platform-dependent for no gain.
+    """
+
+    def output_text(self):
+        try:
+            return paths.widget_output_path().read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    def run_child(self, code):
+        """Run a child to completion through the real spawn path."""
+        child = launch._spawn([sys.executable, "-c", code], os.getcwd())
+        child.wait(timeout=60)
+        return child
+
+    def test_a_crashing_panel_leaves_its_traceback_behind(self):
+        """The whole point: the failure is legible after the fact."""
+        self.run_child("raise RuntimeError('panel fell over')")
+        text = self.output_text()
+        self.assertIn("Traceback", text)
+        self.assertIn("panel fell over", text)
+
+    def test_a_panel_that_starts_cleanly_says_only_that_it_was_launched(self):
+        self.run_child("pass")
+        # The header alone, so a reader who opens the file after a good launch
+        # is not left wondering which of two silences they are looking at.
+        self.assertIn("===", self.output_text())
+        self.assertNotIn("Traceback", self.output_text())
+
+    def test_the_scope_retry_keeps_both_attempts(self):
+        """Append, not truncate. The first attempt is why there was a second."""
+        self.run_child("import sys; sys.stderr.write('first attempt\n')")
+        self.run_child("import sys; sys.stderr.write('second attempt\n')")
+        text = self.output_text()
+        self.assertIn("first attempt", text)
+        self.assertIn("second attempt", text)
+
+    def test_the_file_is_started_again_once_it_outgrows_the_cap(self):
+        """Bounded across sessions, or it is a slow leak nobody is watching."""
+        path = paths.widget_output_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x" * (launch.OUTPUT_LIMIT_BYTES + 1), encoding="utf-8")
+        self.run_child("pass")
+        self.assertLess(path.stat().st_size, launch.OUTPUT_LIMIT_BYTES)
+        self.assertNotIn("xxxx", self.output_text())
+
+    def test_a_file_that_cannot_be_opened_still_starts_the_panel(self):
+        """A full disk is not a reason to refuse to draw the window.
+
+        Simulated by putting a directory where the file belongs, which is the
+        one way to make open() fail that behaves the same on both platforms.
+        """
+        paths.widget_output_path().mkdir(parents=True, exist_ok=True)
+        child = self.run_child("pass")
+        self.assertEqual(child.returncode, 0)
+
