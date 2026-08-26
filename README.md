@@ -28,6 +28,36 @@ You need [pixi](https://pixi.sh) and Claude Code. Nothing else has to be
 installed system-wide: pixi supplies Python and the GTK 3 bindings itself, so in
 particular you do **not** need a distribution's `python3-gi`.
 
+### Getting pixi
+
+If you do not have it yet, one command installs it, for your user only — no root,
+nothing system-wide. On **Linux**:
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | sh
+```
+
+On **Windows**, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm -useb https://pixi.sh/install.ps1 | iex"
+```
+
+Either one drops pixi into your home directory — `~/.pixi/bin`, or
+`%USERPROFILE%\.pixi\bin` — and adds that to `PATH`. The `PATH` change reaches
+only shells started afterwards, so open a new terminal and check it took:
+
+```bash
+pixi --version
+```
+
+If that says *command not found*, the `PATH` line landed in a startup file your
+shell does not read; add `~/.pixi/bin` to `PATH` yourself. A package manager
+works just as well if you prefer one: `winget install prefix-dev.pixi`, or
+`cargo install --locked pixi`.
+
+### The project
+
 **Linux** — any normal desktop session, Xorg or Wayland. A Wayland session runs
 the panel through XWayland, which every mainstream desktop already ships, so
 there is nothing to install or switch on for the display either; the one setup
