@@ -186,16 +186,9 @@ Everything runtime-owned lives under `data/`, and is safe to delete wholesale
   `launch: another panel won the race` from the launcher that started it) —
   expect one of each per session on a front end that starts two sessions at
   once, which is what Claude Desktop does in code mode.
-- `widget-output.log` — whatever the panel itself said on the way up: pixi's
-  own chatter, GLib warnings, and a traceback if it died. Separate from
-  `cost-meter.log` because the author is different — that file is what this tool
-  decided, this one is what the child process emitted — and because this one is
-  disposable, started again once it passes 64 KiB. It exists because on Windows
-  the panel runs under `pythonw`, which a detached process leaves with no
-  console, so before this file a panel that crashed on startup left no trace
-  anywhere: the log said `launch: spawned pixi pid N`, truthfully, and the window
-  simply never appeared. A launch that worked leaves only a `===` header line
-  here.
+- `widget-output.log` — whatever the panel itself said on the way up: a `===`
+  header per launch, pixi's chatter, GLib warnings, and a traceback if it died;
+  disposable, and started again once it passes 64 KiB.
 
 Deleting `data/` entirely is a safe full reset: the next run rebuilds
 `events.jsonl` and `state.json` from the real transcripts under
@@ -244,24 +237,8 @@ Delete the file to reset all of them.
   shell is one that will die with that shell.
 - **Nothing appears at all, on Windows, and `data/widget-output.log` ends in an
   `AssertionError` from `gi/overrides/Gdk.py`** — Smart App Control is blocking
-  the unsigned GTK DLLs pixi installed, and the panel is dying on `import gi`.
-  The line above the traceback names the file it could not load (`epoxy-0.dll`,
-  a dependency of `gdk-3-0.dll`); Windows spells the reason "an application
-  control policy has blocked this file", in your display language. Confirm it
-  from the Code Integrity log:
-
-  ```powershell
-  Get-WinEvent -LogName 'Microsoft-Windows-CodeIntegrity/Operational' |
-    Where-Object { $_.Message -match '\.pixi' } | Select-Object -First 3 TimeCreated, Id, Message
-  ```
-
-  Events 3033 and 3077 naming files under `.pixi` are this. `pixi.toml` already
-  pins `epoxy` on win-64 to a build revision Smart App Control trusts, so seeing
-  this at all means that verdict has changed and the pin needs moving to another
-  revision — `pixi search epoxy --platform win-64` lists them. The README's
-  [known issue](../README.md#known-issue-in-this-version-windows-smart-app-control)
-  covers the pin, why this can start happening on a machine where nothing changed,
-  and the one swap of this kind that must not be repeated.
+  a GTK DLL pixi installed, so the `epoxy` pin in `pixi.toml` needs moving to
+  another build revision (`pixi search epoxy --platform win-64`).
 - **The panel is invisible, on Linux** — confirm the pixi `widget` task's
   `GDK_BACKEND=x11` took effect and you are on Xorg or XWayland. A pure Wayland
   client cannot position itself in a corner or raise itself above other windows,
@@ -272,9 +249,8 @@ Delete the file to reset all of them.
   launcher exits 0 and prints nothing whatever happens, deliberately, so the log
   is the only place that distinguishes the three cases: `launch: spawned` (it
   started something, and the problem is further along — read
-  `data/widget-output.log`, which is where "further along" now reports itself),
-  `launch: already running` (it decided a panel was up), and `launch: failed`
-  with the exception.
+  `data/widget-output.log`), `launch: already running` (it decided a panel was
+  up), and `launch: failed` with the exception.
   **No line at all means the hook never ran** — check that `SessionStart` in
   `~/.claude/settings.json` carries its `matcher`, and that its `command` is a
   quoted forward-slash path rather than a native Windows one. A backslash path
