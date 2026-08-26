@@ -29,7 +29,7 @@ in a terminal.** The panel's fetch needs a token that only a terminal writes; th
 Claude Desktop app keeps its own elsewhere. In the desktop app `/usage` still
 refreshes the percentages once, but they stand still again afterwards. The dollar
 rows are unaffected. Detail in
-[Where the limit figures come from](docs/METERING.md#where-the-limit-figures-come-from).
+[Where the limit figures come from](docs/METERING.md#where-the-limit-figures-come-from). Similar issue is for billing row (API/team)
 
 ## Install
 
