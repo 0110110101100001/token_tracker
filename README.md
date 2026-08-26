@@ -22,6 +22,31 @@ the panel closed, uninstalling. Everything else is next door:
   `~/.claude/settings.json`, starting and stopping the panel by hand, every file
   under `data/`, the `config.json` settings, troubleshooting, and the tests.
 
+## Known issue in this version: the Claude Desktop app
+
+**If you work in the Claude Desktop app rather than in a terminal, the two limit
+percentages stop refreshing on their own.** Nothing else is affected — the dollar
+rows count desktop-app work exactly as they count a terminal's, because Claude
+Code writes the same transcripts either way.
+
+The panel asks the server for those percentages itself, once a minute, using the
+subscription token Claude Code keeps in `~/.claude/.credentials.json`. Only Claude
+Code in a terminal ever writes that file. The desktop app keeps its own token
+somewhere else and does not pass it to the hooks it runs, so on a machine where
+the terminal goes unused the token on disk expires after about eight hours — or
+was never written at all — and every fetch from then on is skipped. Nothing
+reports it: no row changes, and `data/cost-meter.log` stays silent.
+
+The rows then have only the copy Claude Code caches for itself, which it refreshes
+when a session starts and when you run `/usage`. So the percentages still move at
+each of those moments and stand still in between, however long you work — and a
+5-hour window that resets mid-session leaves its row on dollars until the next
+session start or `/usage`, because the figure it had describes a window that is
+gone.
+
+Running Claude Code in a terminal occasionally rewrites the token and brings the
+once-a-minute fetch back. There is no other workaround in this version.
+
 ## Install
 
 You need [pixi](https://pixi.sh) and Claude Code. Nothing else has to be

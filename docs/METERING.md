@@ -17,9 +17,13 @@ Worth reading before you trust a figure on the panel.
   input is the Claude Code transcripts under `~/.claude/projects/` on the computer
   the tool runs on. Claude Code on a second machine, under another user account,
   on the other side of a dual boot, or on Windows beside WSL writes its
-  transcripts somewhere this installation never looks. claude.ai, the desktop app
-  and the phone write no local transcripts at all. All of that spends your
-  subscription without moving a dollar figure here.
+  transcripts somewhere this installation never looks. claude.ai, the phone, and
+  the Claude Desktop app's ordinary chat write no local transcripts at all. The
+  desktop app's **code mode** is the exception and needs no allowance made for
+  it: it runs Claude Code, writes its transcripts to the same
+  `~/.claude/projects/`, and runs the same hooks, so its turns are priced here
+  exactly like a terminal's. All of the rest spends your subscription without
+  moving a dollar figure here.
 - **The dollar figures are an API-equivalent, not an invoice.** They price your
   token counts at published API rates, which is a consistent way to weight and
   compare usage. On a subscription it is not a bill you will receive.
@@ -28,6 +32,12 @@ Worth reading before you trust a figure on the panel.
   the machine boundary above does not apply to them. What they carry instead is
   age: usually a minute of it, and hours whenever the panel cannot reach the
   network, since usage since the fetch only pushes them up.
+- **On a machine used only through the Claude Desktop app, that age is
+  permanent.** The panel's own fetch needs the token in
+  `~/.claude/.credentials.json`, which only a terminal's Claude Code writes, so
+  without one the fetch is skipped for good and the rows fall back to what Claude
+  Code caches — which moves on a session start and a `/usage`, and never in
+  between. Under [Where the limit figures come from](#where-the-limit-figures-come-from).
 
 
 
@@ -86,12 +96,34 @@ ever read. Nothing here writes credentials, nothing logs a token, and the
 it, and rotating it behind Claude Code's back could log you out of the tool this
 panel exists to measure. An expired token simply means the fetch is skipped.
 
+**Which makes the panel's own fetch quietly dependent on a terminal.** That file
+is written by Claude Code running in a terminal and by nothing else. The Claude
+Desktop app runs the same Claude Code, but hands it a token of its own from
+`~/.config/Claude/config.json`, and strips it back out of the environment the
+hooks run in — so a panel launched from a desktop session cannot see it, and
+`~/.claude/.credentials.json` goes unwritten. Its token lasts about eight hours.
+On a machine where the terminal is used now and then this never surfaces; on one
+used only through the desktop app the fetch is skipped from the first minute
+onwards, and the rows live on Claude Code's cache alone — a session start and a
+`/usage`, and nothing in between. The percentages then behave as they did before
+this fetch existed, including the 5-hour block that resets mid-session and leaves
+its row on dollars. **Nothing on screen or in the log says so**; see the note on
+what is and is not logged below.
+
 **The endpoint is undocumented and may change without notice.** That is why every
 failure ends in the behaviour the panel had before it: nothing written, no error on
 screen, and rows reading Claude Code's cache. It is also rate-limited — five-second
 polling earned `429 Retry-After: 196` — so a refusal is obeyed for exactly as long
 as it asks, and other failures back off by doubling, up to ten minutes. `data/cost-meter.log`
-records each failed fetch, which is where an endpoint that has moved for good shows up.
+records each failed *request*, which is where an endpoint that has moved for good shows up.
+
+It does **not** record the case above. A missing or expired token is settled
+before any request is made, so there is no exception to log and nothing is
+written — the panel simply stops fetching, silently, for as long as the condition
+lasts. So an empty log means either that the fetch is working or that it is not
+being attempted at all, and the two cannot be told apart from there. What
+distinguishes them is `data/usage.json`: if its `fetchedAtMs` is not moving every
+minute while the log stays empty, the token is the reason.
 
 Three things are checked before a figure is shown, each for a way it could be
 confidently wrong:
@@ -220,6 +252,19 @@ your spend.
   offline, an expired token, a rate limit, or the endpoint changing — it falls
   silently back to whatever Claude Code last cached, which can be hours old with
   nothing on the row to distinguish the two cases.
+- **The once-a-minute fetch does not work at all on a machine used only through
+  the Claude Desktop app.** It reads its token from
+  `~/.claude/.credentials.json`, which only a terminal's Claude Code writes; the
+  desktop app keeps its own elsewhere and does not pass it to the hooks. So the
+  token expires after about eight hours, or was never written, and every fetch
+  after that is skipped — without a row changing or a line reaching
+  `data/cost-meter.log`. The rows fall back to Claude Code's cache, which moves
+  on a session start and on `/usage` and never in between, so the percentages can
+  stand still through hours of work and the 5-hour row can sit on dollars for the
+  rest of a session. Running Claude Code in a terminal occasionally rewrites the
+  token and restores the fetch; there is no other workaround in this version. The
+  dollar rows are unaffected — desktop-app code mode writes the same transcripts
+  and runs the same hooks.
 - **A whole percentage point is the finest the server reports.** The figures arrive
   as integers, so the rows step rather than glide however often they are fetched,
   and the two limit rows are deliberately left out of the panel's rolling

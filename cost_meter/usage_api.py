@@ -24,6 +24,21 @@ token beside the access token is deliberately never used: the refresh endpoint m
 rotate it, and rotating it behind Claude Code's back could log the user out of the
 very tool this panel measures. An expired token means we skip the request and
 leave the cache to answer.
+
+That last sentence is also this module's known hole. `.credentials.json` is
+written by Claude Code in a terminal and by nothing else: the Claude Desktop app
+runs the same Claude Code with a token of its own from
+`~/.config/Claude/config.json`, and strips it back out of the environment its
+hooks run in, so a panel launched from a desktop session can neither read that
+file's replacement nor inherit one. On a machine used only through the desktop
+app the token therefore expires -- about eight hours -- or was never written at
+all, and every call here returns `None` from then on. That is silent by
+construction: the check happens before any request, so there is no exception,
+nothing is logged, and the caller cannot tell "fetch working" from "fetch never
+attempted". The rows fall back to Claude Code's own cache, which moves on a
+session start and a `/usage`, which is the behaviour this module was written to
+replace. Fixing it needs a token this process can actually obtain; documented in
+docs/METERING.md rather than worked around here.
 """
 
 import json
@@ -72,8 +87,12 @@ def _token(now):
     file, a login that is not a subscription (an API-key machine has no
     `claudeAiOauth`), and a token whose `expiresAt` has passed. The last is
     checked here rather than discovered as a 401 because the request is certain to
-    fail, and because Claude Code will have written a fresh token by the time it
-    next runs.
+    fail.
+
+    It was also written on the assumption that Claude Code would have replaced the
+    token by the time this next ran, and that assumption holds only for a terminal.
+    Under the Claude Desktop app nothing rewrites this file, so an expiry here is
+    permanent rather than momentary -- see the note in the module docstring.
 
     Read on every call rather than held: Claude Code rewrites this file whenever
     it refreshes the token, so a cached copy would go stale once and then fail for
