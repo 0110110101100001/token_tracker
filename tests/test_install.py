@@ -222,10 +222,10 @@ class SpawnEscapesTheCallersCgroupTest(unittest.TestCase):
     session, which is all the launcher used to do, but not the cgroup — and
     terminal emulators put each tab in a transient scope with
     KillMode=control-group. So closing the tab that happened to win the launch
-    race killed the panel with it, silently: the kill is a SIGTERM from systemd
-    and the panel's output goes to DEVNULL either way. The panel then came back
-    at the next SessionStart, which from the outside looks like it vanishing and
-    returning at random.
+    race killed the panel with it, silently: the kill is a SIGTERM from systemd,
+    which the panel cannot report on its way down however its output is
+    redirected. The panel then came back at the next SessionStart, which from the
+    outside looks like it vanishing and returning at random.
     """
 
     def test_the_child_lands_outside_our_cgroup(self):
