@@ -24,28 +24,12 @@ the panel closed, uninstalling. Everything else is next door:
 
 ## Known issue in this version: the Claude Desktop app
 
-**If you work in the Claude Desktop app rather than in a terminal, the two limit
-percentages stop refreshing on their own.** Nothing else is affected — the dollar
-rows count desktop-app work exactly as they count a terminal's, because Claude
-Code writes the same transcripts either way.
-
-The panel asks the server for those percentages itself, once a minute, using the
-subscription token Claude Code keeps in `~/.claude/.credentials.json`. Only Claude
-Code in a terminal ever writes that file. The desktop app keeps its own token
-somewhere else and does not pass it to the hooks it runs, so on a machine where
-the terminal goes unused the token on disk expires after about eight hours — or
-was never written at all — and every fetch from then on is skipped. Nothing
-reports it: no row changes, and `data/cost-meter.log` stays silent.
-
-The rows then have only the copy Claude Code caches for itself, which it refreshes
-when a session starts and when you run `/usage`. So the percentages still move at
-each of those moments and stand still in between, however long you work — and a
-5-hour window that resets mid-session leaves its row on dollars until the next
-session start or `/usage`, because the figure it had describes a window that is
-gone.
-
-Running Claude Code in a terminal occasionally rewrites the token and brings the
-once-a-minute fetch back. There is no other workaround in this version.
+**The two limit percentages keep themselves up to date only if Claude Code is run
+in a terminal.** The panel's fetch needs a token that only a terminal writes; the
+Claude Desktop app keeps its own elsewhere. In the desktop app `/usage` still
+refreshes the percentages once, but they stand still again afterwards. The dollar
+rows are unaffected. Detail in
+[Where the limit figures come from](docs/METERING.md#where-the-limit-figures-come-from).
 
 ## Install
 
@@ -111,6 +95,18 @@ pixi run smoke
 
 Then **restart Claude Code** and start a new session. The panel comes up on its
 own, and the numbers start moving after your first assistant turn.
+
+Then run
+```bash
+/usage  # in claude session
+```
+
+once in a **terminal** Claude Code session, even if you work in the Claude
+Desktop app — especially then. Starting that session writes the token the panel's
+own fetch needs, and `/usage` fills the limit percentages in straight away rather
+than leaving the **5h window** and **week** rows on dollars until the first fetch
+lands. Repeat it occasionally if the terminal is not where you normally work: see
+[the known issue](#known-issue-in-this-version-the-claude-desktop-app).
 
 On Windows that restart is not optional, and skipping it is the one failure that
 looks like nothing happening at all: the hooks have to find `pixi` on `PATH`, and
