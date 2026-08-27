@@ -122,6 +122,36 @@ same `state.json` does not re-run the animation, and a move smaller than a cent
 is set outright. Nothing about the row's size changes, only the value — a
 changing row height would re-anchor the whole panel on every turn.
 
+## Patrik mode
+
+Right click the panel and pick **Patrik mode**. Nothing happens straight away —
+the next turn to land throws money glyphs out of the table and gives the panel a
+short flinch. It stays on until you pick **Patrik mode off**, and it survives a
+restart, because it is saved in `data/config.json` alongside the position and the
+scale.
+
+It is off until you ask for it, and only a genuinely new turn sets it off.
+`refresh()` also runs from the file monitor, the 60-second staleness poll and
+**Refresh now**, and none of those is a charge — a burst driven by anything but
+`updated_at` moving would spray the panel every minute. The panel's own opening
+refresh is skipped too: the figure already on disk at startup has not just been
+charged, and auto-launch opens a panel at every session.
+
+The glyphs are drawn in a second, transparent, always-on-top window covering the
+panel and a wide margin round it, because the whole point is that they leave the
+table rather than fading out inside it. That window ignores the mouse entirely,
+so clicks in it reach the panel or the desktop underneath as though it were not
+there.
+
+**On a machine that cannot composite** — no RGBA visual, or no compositor — there
+is no overlay and no glyphs, and the meter carries on exactly as before. An
+opaque grey slab over the desktop would be far worse than no celebration, and
+`data/widget-output.log` records the reason a burst never appeared.
+
+The glyphs are 🤑, 💲, 💰 and 💵. 🪙 is the obvious fifth and is deliberately
+absent: Segoe UI Emoji on Windows 10 has no glyph for it, so it draws as an empty
+box.
+
 ## Moving and resizing it
 
 Drag the **middle** of the panel to move it. Drag **any edge or corner** to
