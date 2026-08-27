@@ -225,6 +225,117 @@ class FadeTest(unittest.TestCase):
         self.assertEqual(sworm.frame(0.016), sworm.particles())
 
 
+
+class DurationTest(unittest.TestCase):
+    """How long a celebration lasts, and why it depends on the turn.
+
+    The same shape as `roll.duration_ms` and for the same reason: a fixed length
+    runs an expensive turn and a trivial one at wildly different speeds to cover
+    their ground in one window, and it is the expensive one that most deserves to
+    be watched. The numbers here are exactly double the roll's, so the figures
+    finish counting up around halfway through the glyphs.
+    """
+
+    def test_a_turn_that_cost_nothing_still_gets_the_base_length(self):
+        self.assertEqual(patrik.duration_ms(0.0), 2000.0)
+
+    def test_forty_dollars_takes_four_seconds(self):
+        self.assertEqual(patrik.duration_ms(40.0), 4000.0)
+
+    def test_it_grows_with_the_spend(self):
+        previous = 0.0
+        for usd in (0.0, 0.01, 1.0, 5.0, 40.0, 200.0):
+            length = patrik.duration_ms(usd)
+            self.assertGreater(length, previous)
+            previous = length
+
+    def test_a_missing_figure_is_the_base_length_rather_than_a_crash(self):
+        # state.json can carry a null here, and the panel must not die of it.
+        self.assertEqual(patrik.duration_ms(None), 2000.0)
+
+    def test_a_negative_figure_does_not_run_backwards(self):
+        """A correction can push a turn's cost below zero; length is a length."""
+        self.assertEqual(patrik.duration_ms(-40.0), patrik.duration_ms(40.0))
+
+
+class EmitTest(unittest.TestCase):
+    """Glyphs keep arriving for as long as the celebration runs.
+
+    One opening burst was the first version, and on a four-second animation it
+    left three and a half seconds of glyphs merely falling -- the celebration
+    visibly ran out before it ended.
+    """
+
+    def test_it_spawns_at_the_rate_it_was_given(self):
+        sworm = swarm()
+        sworm.emit(1.0, RECT, rate=10.0)
+        self.assertEqual(len(sworm.particles()), 10)
+
+    def test_a_fraction_of_a_glyph_is_carried_across_frames(self):
+        """At 16 ms a frame, ten a second is 0.16 of a glyph per frame.
+
+        Truncated per frame that is zero every time, and no glyph would ever
+        arrive after the opening burst.
+        """
+        sworm = swarm()
+        for _ in range(63):                      # a second of 16 ms frames
+            sworm.emit(0.016, RECT, rate=10.0)
+        self.assertGreaterEqual(len(sworm.particles()), 9)
+
+    def test_no_time_passing_spawns_nothing(self):
+        sworm = swarm()
+        sworm.emit(0.0, RECT, rate=10.0)
+        self.assertEqual(sworm.particles(), [])
+
+    def test_emitted_glyphs_start_inside_the_panel_too(self):
+        sworm = swarm()
+        sworm.emit(1.0, RECT, rate=10.0)
+        x, y, width, height = RECT
+        for particle in sworm.particles():
+            self.assertGreaterEqual(particle.x, x)
+            self.assertLessEqual(particle.x, x + width)
+
+
+class LifeBudgetTest(unittest.TestCase):
+    """No glyph may outlive the animation it belongs to.
+
+    The animation's length is the promise -- two seconds, four on an expensive
+    turn -- and a glyph thrown near the end with a full lifetime would still be
+    falling a second and a half after the celebration was supposed to be over.
+    """
+
+    def test_a_glyph_cannot_outlive_the_budget_it_was_given(self):
+        sworm = swarm()
+        sworm.burst(20, RECT, max_life=0.3)
+        for particle in sworm.particles():
+            self.assertLessEqual(particle.life, 0.3)
+
+    def test_a_budget_longer_than_a_natural_life_changes_nothing(self):
+        sworm = swarm()
+        sworm.burst(20, RECT, max_life=99.0)
+        for particle in sworm.particles():
+            self.assertLessEqual(particle.life, patrik.LIFE_MAX)
+
+    def test_a_clamped_glyph_still_fades_over_its_whole_life(self):
+        """Which is what stops a late glyph blinking out instead of fading.
+
+        The fade is measured against the glyph's own life, not against the
+        animation, so a glyph given a third of a second fades smoothly across
+        that third of a second.
+        """
+        sworm = swarm()
+        sworm.burst(1, RECT, max_life=0.3)
+        particle = sworm.particles()[0]
+        run(sworm, 0.15, dt=0.015)
+        self.assertAlmostEqual(particle.alpha, 0.5, places=1)
+
+    def test_a_budget_of_nothing_spawns_nothing(self):
+        # The last frame of the animation asks for a life of zero, and a glyph
+        # that is born dead would be painted once at alpha zero for no reason.
+        sworm = swarm()
+        sworm.burst(10, RECT, max_life=0.0)
+        self.assertEqual(sworm.particles(), [])
+
 class ShakeTest(unittest.TestCase):
     def test_it_ends_exactly_at_the_origin(self):
         """The property the panel's saved position depends on.
@@ -271,6 +382,33 @@ class ShakeTest(unittest.TestCase):
         early = max(abs(shake.offset(step / 100)[0]) for step in range(0, 30))
         late = max(abs(shake.offset(step / 100)[0]) for step in range(70, 100))
         self.assertLess(late, early)
+
+    def test_a_long_shake_wobbles_as_fast_as_a_short_one(self):
+        """Cycles come from the duration, so a flinch stays a flinch.
+
+        With a fixed cycle count a shake stretched from 420 ms to 1.6 s becomes a
+        slow sway -- the panel leaning about rather than reacting. Holding the
+        time per wobble constant is what keeps the character when the length
+        changes with the turn.
+        """
+        def wobbles_per_second(duration_ms):
+            shake = patrik.Shake(amplitude=40, duration_ms=duration_ms)
+            crossings, previous = 0, 0
+            for step in range(1, 400):
+                dx = shake.offset(step / 400)[0]
+                if dx and previous and (dx > 0) != (previous > 0):
+                    crossings += 1
+                if dx:
+                    previous = dx
+            return crossings / (duration_ms / 1000.0)
+
+        short = wobbles_per_second(420)
+        long_shake = wobbles_per_second(1680)
+        self.assertAlmostEqual(short, long_shake, delta=short * 0.25)
+
+    def test_the_default_length_is_a_share_of_the_base_animation(self):
+        self.assertEqual(patrik.SHAKE_MS,
+                         patrik.BASE_MS * patrik.SHAKE_SHARE)
 
     def test_a_zero_amplitude_shake_is_simply_still(self):
         # Config can say 0 to keep the glyphs and drop the jiggle.
@@ -718,6 +856,130 @@ class ClickThroughTest(PanelTest):
             ctypes.c_void_p(hwnds[0]), GWL_EXSTYLE)
         self.assertTrue(exstyle & WS_EX_TRANSPARENT,
                         f"overlay would swallow clicks: exstyle 0x{exstyle:08X}")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class LengthTest(PanelTest):
+    """The celebration's length comes from what the turn cost.
+
+    Driven on the test's own clock, so these are counts of virtual milliseconds
+    rather than a race against the machine.
+    """
+
+    STEP = 0.016
+
+    def length_ms(self, turn_usd):
+        """How long the whole celebration ran, in milliseconds."""
+        self.window.set_patrik(True)
+        self.turn(turn_usd)
+        frames = 0
+        while self.tick(self.STEP):
+            frames += 1
+            if frames > 4000:
+                self.fail("the celebration never finished")
+        return frames * self.STEP * 1000.0
+
+    def test_a_cheap_turn_runs_about_two_seconds(self):
+        self.assertAlmostEqual(self.length_ms(0.0), 2000.0, delta=120.0)
+
+    def test_a_forty_dollar_turn_runs_about_four(self):
+        self.assertAlmostEqual(self.length_ms(40.0), 4000.0, delta=120.0)
+
+    def test_nothing_outlives_the_animation(self):
+        """The length is the promise, so the last glyph dies inside it.
+
+        Without the life budget a glyph thrown near the end keeps falling for its
+        own full lifetime, and a two-second celebration is still clearing up a
+        second and a half later.
+        """
+        self.window.set_patrik(True)
+        self.turn(0.0)
+        frames = 0
+        while self.tick(self.STEP):
+            frames += 1
+        self.assertLess(frames * self.STEP * 1000.0,
+                        patrik.duration_ms(0.0) + 120.0)
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class ArrivalTest(PanelTest):
+    """New glyphs keep coming for as long as the celebration runs."""
+
+    def test_glyphs_keep_arriving_after_the_opening_burst(self):
+        self.window.set_patrik(True)
+        self.turn(40.0)
+        seen = {id(p) for p in self.window.swarm.particles()}
+        self.assertEqual(len(seen), patrik.BURST)
+        for _ in range(60):
+            self.tick()
+            seen.update(id(p) for p in self.window.swarm.particles())
+        self.assertGreater(len(seen), patrik.BURST,
+                           "the spray stopped after the opening burst")
+
+    def test_glyphs_are_still_arriving_late_in_a_long_celebration(self):
+        """Not merely for the first moment of it.
+
+        A four-second animation whose glyphs all arrived in the first half would
+        spend its second half visibly running out.
+        """
+        self.window.set_patrik(True)
+        self.turn(40.0)
+        half = int(patrik.duration_ms(40.0) / 2.0 / 16.0)
+        for _ in range(half):
+            self.tick()
+        before = {id(p) for p in self.window.swarm.particles()}
+        for _ in range(30):
+            self.tick()
+        arrived = {id(p) for p in self.window.swarm.particles()} - before
+        self.assertTrue(arrived, "nothing new arrived in the second half")
+
+    def test_the_spray_stops_before_the_end(self):
+        """Glyphs born in the last moments are specks, not money.
+
+        Their life is clamped to what is left, so they would appear and vanish
+        within a frame or two of the panel -- flicker rather than a celebration.
+        """
+        self.window.set_patrik(True)
+        self.turn(0.0)
+        # Just past the floor, then every remaining frame is checked. A window of
+        # a few frames is not enough to catch this: at nine glyphs a second, 80 ms
+        # owes less than one, so a spray running to the very end would go unnoticed
+        # most of the time.
+        stops_at = (patrik.duration_ms(0.0) - patrik.EMIT_FLOOR * 1000.0) / 16.0
+        for _ in range(int(stops_at) + 2):
+            self.tick()
+        settled = {id(p) for p in self.window.swarm.particles()}
+        while self.tick():
+            self.assertFalse(
+                {id(p) for p in self.window.swarm.particles()} - settled,
+                "a glyph was still being born in the final moments")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class ShakeLengthTest(PanelTest):
+    def test_the_flinch_lasts_a_share_of_the_celebration(self):
+        """So it grows with the turn instead of being over in a blink.
+
+        Measured as the last frame on which the panel is still off its base: with
+        a fixed length that figure would not move between a cheap turn and an
+        expensive one.
+        """
+        def moving_until_ms(turn_usd):
+            self.window.set_patrik(True)
+            self.turn(turn_usd)
+            base = self.window._patrik_base
+            last, frames = 0, 0
+            while self.tick():
+                frames += 1
+                if tuple(self.window.get_position()) != base:
+                    last = frames
+            return last * 16.0
+
+        cheap = moving_until_ms(0.0)
+        dear = moving_until_ms(40.0)
+        self.assertAlmostEqual(cheap, patrik.duration_ms(0.0) * patrik.SHAKE_SHARE,
+                               delta=200.0)
+        self.assertGreater(dear, cheap * 1.5)
 
 
 if __name__ == "__main__":

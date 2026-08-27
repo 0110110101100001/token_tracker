@@ -126,9 +126,28 @@ changing row height would re-anchor the whole panel on every turn.
 
 Right click the panel and pick **Patrik mode**. Nothing happens straight away —
 the next turn to land throws money glyphs out of the table and gives the panel a
-short flinch. It stays on until you pick **Patrik mode off**, and it survives a
+flinch. It stays on until you pick **Patrik mode off**, and it survives a
 restart, because it is saved in `data/config.json` alongside the position and the
 scale.
+
+A celebration lasts **two seconds plus 50 ms for every dollar the turn cost**, so
+a few cents runs the base two seconds and a $40 turn runs four. That is the same
+shape as the rolling figures and deliberately twice their numbers, so the rows
+finish counting up around halfway through the glyphs and the two read as one
+event. The panel's flinch takes the first 40 % of whatever that length is, and
+wobbles at the same speed however long it runs — stretched to a fixed number of
+cycles it would become a slow sway, which reads as the panel leaning about rather
+than reacting.
+
+Glyphs keep arriving for the whole of it, not just at the start: a handful lands
+the instant the turn does, and about nine a second follow, so roughly 28 glyphs
+cross a two-second celebration and 46 a four-second one. A single opening burst
+was the first version, and on a long animation it left most of the time to glyphs
+merely falling — the celebration visibly ran out before it ended. Each glyph is
+given only the time that is left, so the animation really does finish when it
+said it would; because a glyph fades across its own lifetime, a late one fades
+quickly rather than blinking out. The spray stops a third of a second before the
+end, where a new glyph would be a speck appearing and vanishing on the panel.
 
 It is off until you ask for it, and only a genuinely new turn sets it off.
 `refresh()` also runs from the file monitor, the 60-second staleness poll and
