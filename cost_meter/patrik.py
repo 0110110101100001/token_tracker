@@ -37,9 +37,28 @@ import random
 # money bag, banknote.
 GLYPHS = ("\U0001F911", "\U0001F4B2", "\U0001F4B0", "\U0001F4B5")
 
-# How many glyphs a turn is worth. Enough to read as a spray, few enough that a
-# 200-pixel-wide panel is not hidden behind them.
+# The opening handful, thrown the instant the turn lands, so the celebration
+# starts full rather than trickling up to speed.
 BURST = 14
+# And the rest, in glyphs per second, for as long as the animation runs. One
+# opening burst was the first version of this, and on a four-second animation it
+# left three and a half seconds of glyphs merely falling -- the celebration
+# visibly ran out well before it ended.
+RATE = 9.0
+
+# How long a celebration lasts: a fixed base plus a share of what the turn cost,
+# so an expensive turn gets the time to be watched instead of being crammed into
+# the same window as a trivial one. Deliberately the same shape as
+# `roll.duration_ms`, and deliberately twice its numbers -- the figures finish
+# counting up around halfway through the glyphs, which reads as one event rather
+# than two.
+BASE_MS = 2000.0
+MS_PER_USD = 50.0
+# Emitting stops when less than this is left, in seconds. A glyph born in the
+# final moments fades correctly -- the fade is measured against its own life --
+# but it never travels far enough to be anything but a speck appearing and
+# vanishing on the panel, which reads as flicker rather than as money.
+EMIT_FLOOR = 0.35
 
 # Pixels per second squared. Strong, because the glyphs have to clear the panel
 # and fall back out of it inside their lifetime rather than hanging in the air.
@@ -57,18 +76,38 @@ LIFE_MIN, LIFE_MAX = 1.4, 2.4
 # panel somebody dragged twice as large.
 SIZE_MIN, SIZE_MAX = 13.0, 24.0
 
-# The flinch: pixels at the widest, and how many times it crosses back over.
-# Three is a flinch; one is a lean, and six is a fault.
+# The flinch. Pixels at the widest, and the share of the animation it occupies --
+# so it lengthens with the turn like everything else, rather than being over in a
+# blink on a four-second celebration.
 SHAKE_AMPLITUDE = 6
-SHAKE_CYCLES = 3.0
+SHAKE_SHARE = 0.4
+SHAKE_MS = BASE_MS * SHAKE_SHARE
+# Milliseconds per wobble, which is what a fixed cycle count cannot give. Stretch
+# a three-cycle shake from 420 ms to 1.6 s and it becomes a slow sway -- the panel
+# leaning about rather than reacting. Holding the time per wobble constant keeps
+# the character when the length changes.
+MS_PER_WOBBLE = 140.0
 # The vertical share. Mostly sideways, because a panel that bounced vertically
 # read as the window manager dropping it rather than as the panel reacting.
 SHAKE_VERTICAL = 0.6
-SHAKE_MS = 420.0
 
 
 def _clamp(p):
     return 0.0 if p < 0.0 else 1.0 if p > 1.0 else p
+
+
+def duration_ms(turn_usd):
+    """How long the celebration of a turn costing `turn_usd` should run.
+
+    Absolute, because a length is a length: a correction can push a turn's cost
+    below zero, and a negative duration would end the animation before it began.
+    A missing figure is the base length rather than an error -- state.json can
+    carry a null there, and the panel must not die of it.
+
+    Unbounded on purpose, as in `roll.duration_ms`: the turns long enough to run
+    long are the ones worth a long look.
+    """
+    return BASE_MS + abs(turn_usd or 0.0) * MS_PER_USD
 
 
 class Particle:
@@ -124,16 +163,35 @@ class Swarm:
         self._glyphs = tuple(glyphs)
         self._rng = rng or random.Random()
         self._alive = []
+        # The fraction of a glyph a frame was owed but could not deliver. At
+        # 16 ms a frame, nine a second is 0.14 of a glyph per frame: truncated
+        # and forgotten it is zero every time, and nothing would ever arrive
+        # after the opening burst.
+        self._pending = 0.0
 
-    def burst(self, count, rect):
+    def burst(self, count, rect, max_life=None):
         """Throw `count` glyphs out of `rect`, the panel inside the overlay.
 
         They start inside the panel because that is what says they came from the
         table. The overlay window is the panel plus a margin, so `rect` is
         offset from the origin and every coordinate here is in overlay space.
+
+        `max_life` is how much of the animation is left, in seconds. A glyph
+        thrown near the end with a full lifetime would still be falling long
+        after the celebration was supposed to be over, and the animation's length
+        is the promise. Clamping is safe to do bluntly because the fade is
+        measured against the glyph's own life: one given a third of a second
+        fades smoothly across that third rather than blinking out.
         """
         x, y, width, height = rect
         for _ in range(count):
+            life = self._rng.uniform(LIFE_MIN, LIFE_MAX)
+            if max_life is not None:
+                life = min(life, max_life)
+            if life <= 0.0:
+                # Born dead. Skipped rather than appended: it would be painted
+                # once at alpha zero and dropped on the very next frame.
+                continue
             self._alive.append(Particle(
                 glyph=self._rng.choice(self._glyphs),
                 x=x + self._rng.uniform(0.0, width),
@@ -141,8 +199,20 @@ class Swarm:
                 vx=self._rng.uniform(-DRIFT, DRIFT),
                 vy=-self._rng.uniform(RISE_MIN, RISE_MAX),
                 size=self._rng.uniform(SIZE_MIN, SIZE_MAX),
-                life=self._rng.uniform(LIFE_MIN, LIFE_MAX),
+                life=life,
             ))
+
+    def emit(self, dt, rect, rate=RATE, max_life=None):
+        """Spawn `rate` glyphs per second, over a frame of `dt` seconds.
+
+        The whole of the celebration is fed through here after the opening burst,
+        so glyphs keep arriving for as long as it runs instead of the panel
+        spraying once and then watching the spray fall.
+        """
+        self._pending += rate * dt
+        count = int(self._pending)
+        self._pending -= count
+        self.burst(count, rect, max_life=max_life)
 
     def frame(self, dt):
         """Advance every glyph by `dt` seconds. Returns the survivors.
@@ -172,9 +242,13 @@ class Shake:
     hand it elapsed-over-duration exactly as it does for a roll.
     """
 
-    def __init__(self, amplitude=SHAKE_AMPLITUDE, cycles=SHAKE_CYCLES):
+    def __init__(self, amplitude=SHAKE_AMPLITUDE, duration_ms=SHAKE_MS):
         self._amplitude = amplitude
-        self._cycles = cycles
+        # Cycles from the duration rather than fixed, so the wobble runs at the
+        # same speed however long the shake is. At least one, because a shake
+        # shorter than a single wobble would return a fragment of a sine and read
+        # as the panel jumping aside and back.
+        self._cycles = max(1.0, duration_ms / MS_PER_WOBBLE)
 
     def offset(self, p):
         """Where the window sits at progress `p`, relative to its anchor.

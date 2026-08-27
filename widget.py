@@ -111,8 +111,6 @@ PATRIK_KEY = "patrik_mode"
 # 420 px/s to be watched on its way out and fade before the edge clips it.
 PATRIK_MARGIN = 130
 PATRIK_FRAME_MS = 16
-# How long the panel's flinch lasts, as a share of the burst it belongs to.
-PATRIK_SHAKE_MS = patrik.SHAKE_MS
 # Titled, because that is how a test finds the window to measure its click-through
 # — see ClickThroughTest in tests/test_patrik.py. Distinct from the panel's own
 # title so the two are never confused for one another.
@@ -742,6 +740,11 @@ class CostMeter(Gtk.Window):
         self._patrik_source = None
         self._patrik_began = 0.0
         self._patrik_frame = 0.0
+        # How long this celebration was given, and how much of that its flinch
+        # takes. Decided per turn, because both depend on what the turn cost --
+        # see `patrik.duration_ms`.
+        self._patrik_ms = patrik.BASE_MS
+        self._shake_ms = patrik.SHAKE_MS
         # Where the window sits for the duration of a shake, and what it is handed
         # back to. Held rather than read per frame: read live it would drift by
         # whatever the last frame's offset was, and the panel would walk.
@@ -1146,7 +1149,7 @@ class CostMeter(Gtk.Window):
             # startup from an absent stamp would be the one burst that most
             # deserves to happen.
             if self._opened and self.patrik_enabled():
-                self.celebrate()
+                self.celebrate(state.get("last_turn_usd") or 0.0)
 
         for key in WINDOW_KEYS:
             self.windows[key] = state.get(key) or {}
@@ -1506,19 +1509,31 @@ class CostMeter(Gtk.Window):
         self.overlay.resize(*self.overlay_size())
         self.overlay.move(x - PATRIK_MARGIN, y - PATRIK_MARGIN)
 
-    def celebrate(self):
-        """Throw a burst of glyphs and flinch. Called when a turn lands.
+    def celebrate(self, turn_usd):
+        """Start a celebration for a turn costing `turn_usd`. A turn has landed.
 
         The caller decides what a turn is; this only obeys. `refresh()` runs from
         the file monitor, the staleness poll, `Refresh now` and `__init__`, and
         only one of those four is a charge — a burst driven by anything but
         `updated_at` moving would spray the panel every minute.
+
+        The length comes from the cost, so an expensive turn is watched rather
+        than crammed into the same window as a trivial one. A turn landing while
+        the last one is still in the air restarts the clock on the new length and
+        leaves the glyphs already flying alone, which is the same thing
+        `Roll.retarget` does for the counting rows.
         """
         if self.overlay is None:
             self.overlay = self.build_overlay()
         if self.overlay is None:
             return
-        self.swarm.burst(patrik.BURST, self.panel_rect())
+        self._patrik_ms = patrik.duration_ms(turn_usd)
+        self._shake_ms = self._patrik_ms * patrik.SHAKE_SHARE
+        # Rebuilt per celebration rather than reused: the wobble's frequency is
+        # derived from its duration, so a longer shake needs its own.
+        self.shake = patrik.Shake(duration_ms=self._shake_ms)
+        self.swarm.burst(patrik.BURST, self.panel_rect(),
+                         max_life=self._patrik_ms / 1000.0)
         # The base is taken once per celebration rather than per frame: read live
         # it would include the previous frame's offset, and the errors would
         # accumulate into the panel walking across the screen.
@@ -1532,21 +1547,33 @@ class CostMeter(Gtk.Window):
             self.sources.append(self._patrik_source)
 
     def on_patrik_frame(self):
-        """One frame of the burst. False when there is nothing left to draw.
+        """One frame of the celebration. False when there is nothing left to do.
 
         Elapsed time is measured rather than assumed: a frame that arrives late
         has to advance the glyphs by however long it actually took, or a busy
-        machine plays the whole burst in slow motion.
+        machine plays the whole thing in slow motion.
+
+        New glyphs are emitted for as long as the animation runs, each with only
+        the time that is left to live, so the celebration keeps arriving instead
+        of spraying once and watching the spray fall — and still ends when it said
+        it would.
         """
         now = time.monotonic()
         dt, self._patrik_frame = now - self._patrik_frame, now
+        elapsed_ms = (now - self._patrik_began) * 1000.0
+        remaining = max(0.0, (self._patrik_ms - elapsed_ms) / 1000.0)
+        if remaining > patrik.EMIT_FLOOR:
+            self.swarm.emit(dt, self.panel_rect(), max_life=remaining)
         self.swarm.frame(dt)
-        self.shake_to((now - self._patrik_began) * 1000.0 / PATRIK_SHAKE_MS)
+        self.shake_to(elapsed_ms / self._shake_ms)
         if self.overlay is not None:
             self.follow_overlay()
             self.overlay.particles = self.swarm.particles()
             self.overlay.queue_draw()
-        if self.swarm.running():
+        # Both conditions, because either alone ends it early: the swarm empties
+        # for an instant between two emitted glyphs, and the clock runs out while
+        # the last of them is still fading.
+        if self.swarm.running() or remaining > 0.0:
             return True
         self.end_patrik()
         return False
