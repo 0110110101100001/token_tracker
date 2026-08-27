@@ -9,12 +9,14 @@ GDK_BACKEND=x11 so the window can place and raise itself.
 """
 
 import argparse
+import ctypes
 import os
 import sys
 import threading
 import time
 from datetime import datetime
 
+import cairo
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -22,10 +24,12 @@ gi.require_version("Gtk", "3.0")
 # then collides with the Gtk 3.0 requirement above.
 gi.require_version("Gdk", "3.0")
 gi.require_version("Pango", "1.0")
-from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import (Gdk, Gio, GLib, Gtk, Pango,  # noqa: E402
+                           PangoCairo)
 
-from cost_meter import (autolaunch, log, paths, roll, store,  # noqa: E402
-                        summary, usage_api, utilization)
+from cost_meter import (autolaunch, log, patrik, paths, roll,  # noqa: E402
+                        store, summary, usage_api, utilization)
 
 MARGIN = 24
 WIDTH = 240
@@ -96,6 +100,35 @@ WINDOW_KINDS = {"window_5h": utilization.SESSION,
 SEVERITY_CLASSES = {"normal": "green", "warning": "amber", "critical": "red"}
 ROLL_FRAME_MS = 16
 ROLL_MIN_DELTA = 0.01
+
+# Patrik mode: the panel throwing money glyphs when a turn lands. Off unless the
+# menu says otherwise, and the key lives in the same config.json as the position
+# and the scale, so it outlives the panel that was asked for it.
+PATRIK_KEY = "patrik_mode"
+# The glyphs are drawn in a second, transparent, always-on-top window rather than
+# inside the panel, because the whole point is that they leave it. This is how far
+# that window reaches past the panel on every side: enough for a glyph thrown at
+# 420 px/s to be watched on its way out and fade before the edge clips it.
+PATRIK_MARGIN = 130
+PATRIK_FRAME_MS = 16
+# How long the panel's flinch lasts, as a share of the burst it belongs to.
+PATRIK_SHAKE_MS = patrik.SHAKE_MS
+# Titled, because that is how a test finds the window to measure its click-through
+# — see ClickThroughTest in tests/test_patrik.py. Distinct from the panel's own
+# title so the two are never confused for one another.
+OVERLAY_TITLE = "Claude cost meter glyphs"
+# Named per platform rather than left to the panel's own font, which is a text
+# family and would hand the glyphs to Pango's fallback chain a character at a
+# time. Where the named family is missing Pango falls back anyway, so a Linux box
+# without Noto Color Emoji gets monochrome glyphs rather than empty boxes.
+EMOJI_FONT = "Segoe UI Emoji" if os.name == "nt" else "Noto Color Emoji"
+
+GWL_EXSTYLE = -20
+# The documented condition for a window that mouse clicks fall through. GDK's
+# win32 backend does not set it for `set_pass_through` or for an empty input
+# shape — measured, both are accepted and dropped — so on Windows the panel sets
+# it itself. See `PatrikOverlay.let_clicks_through`.
+WS_EX_TRANSPARENT = 0x00000020
 
 # The sizes at scale 1.0, which is the size the panel shipped with and the one
 # an unresized panel has to keep.
@@ -439,6 +472,142 @@ def _row(grid, index, caption, labels):
     return right
 
 
+class PatrikOverlay(Gtk.Window):
+    """The transparent window the money glyphs are drawn in.
+
+    A window of its own rather than a Gtk.Overlay inside the panel, because the
+    effect is glyphs *leaving* the table: anything drawn inside the panel is
+    clipped at its border, and a burst that faded out before the edge reads as
+    dirt on the window rather than as money flying off.
+
+    It carries no input of its own and must carry none: it covers the panel and a
+    wide margin round it, so every click landing there has to reach whatever is
+    underneath — the panel itself, or the desktop. `let_clicks_through` is the
+    only part of that which is not one GTK call, and the reason is in its
+    docstring.
+
+    Built on demand and destroyed when the mode goes off, rather than kept hidden
+    for the life of the panel: an always-on-top window nobody can see is worth
+    having only while something is being drawn in it.
+    """
+
+    def __init__(self, visual):
+        super().__init__(title=OVERLAY_TITLE)
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_accept_focus(False)
+        self.set_focus_on_map(False)
+        # UTILITY for the reason the panel uses it: win32 turns it into
+        # WS_EX_TOOLWINDOW, which is what keeps a window out of the taskbar and
+        # out of Alt-Tab. A decoration with its own Alt-Tab entry would be worse
+        # than no decoration at all.
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_resizable(False)
+        # app_paintable and an RGBA visual together are what make the window
+        # transparent; the draw handler then paints nothing but the glyphs.
+        self.set_app_paintable(True)
+        self.set_visual(visual)
+        self.particles = []
+        self.connect("draw", self.on_draw)
+
+    def let_clicks_through(self):
+        """Make the window ignore the mouse. Called once, after realize.
+
+        `set_pass_through` is the GTK way to say this and it is what X11 acts on.
+        On Windows it is a silent no-op: measured, neither it nor an empty input
+        shape sets WS_EX_TRANSPARENT, which is the documented condition for
+        clicks falling through a window. Left at the GTK call alone, this overlay
+        would swallow every click across the panel and its whole margin for as
+        long as Patrik mode was on, and nothing on screen would explain why the
+        desktop had stopped answering.
+
+        That is the same shape of bug as the taskbar one this panel already
+        carries a workaround for — a hint GDK's win32 backend accepts and drops —
+        so it gets the same treatment: ask GTK, then check the result ourselves on
+        the platform where asking is not enough.
+        """
+        window = self.get_window()
+        window.set_pass_through(True)
+        if os.name != "nt":
+            return
+        handle = self.win32_handle()
+        if handle is None:
+            return
+        user32 = ctypes.windll.user32
+        style = user32.GetWindowLongW(ctypes.c_void_p(handle), GWL_EXSTYLE)
+        user32.SetWindowLongW(ctypes.c_void_p(handle), GWL_EXSTYLE,
+                              style | WS_EX_TRANSPARENT)
+
+    def win32_handle(self):
+        """This overlay's HWND, or None if it cannot be identified.
+
+        By title, among the top-level windows this process owns. The direct route
+        would be `gdk_win32_window_get_handle`, and it is not available: PyGObject
+        exposes no HWND accessor on GdkWin32Window at all — checked, there is no
+        `get_handle` and no `get_hwnd` — because the function is not annotated for
+        introspection.
+
+        Both halves of the filter are load-bearing, for the reason
+        tests/test_widget.py gives for the same pattern: by title alone this would
+        find the overlay of a panel running in another process and make that one
+        click-through instead of this one, and by process alone it would find
+        GTK's own hidden helper top-levels.
+        """
+        user32 = ctypes.windll.user32
+        ours = os.getpid()
+        found = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        def visit(hwnd, _param):
+            pid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd),
+                                            ctypes.byref(pid))
+            if pid.value == ours:
+                buffer = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(ctypes.c_void_p(hwnd), buffer, 256)
+                if buffer.value == OVERLAY_TITLE:
+                    found.append(hwnd)
+            return True
+
+        user32.EnumWindows(visit, None)
+        # Exactly one, or none: a second match means the title no longer
+        # identifies this window, and making the wrong one click-through is worse
+        # than leaving this one opaque to the mouse.
+        return found[0] if len(found) == 1 else None
+
+    def on_draw(self, _widget, context):
+        """Paint the glyphs, and nothing else at all.
+
+        SOURCE rather than the default OVER for the clear: OVER onto an
+        already-transparent surface leaves whatever the last frame drew, so the
+        glyphs would smear into a trail instead of moving.
+        """
+        context.set_operator(cairo.OPERATOR_SOURCE)
+        context.set_source_rgba(0.0, 0.0, 0.0, 0.0)
+        context.paint()
+        context.set_operator(cairo.OPERATOR_OVER)
+        layout = PangoCairo.create_layout(context)
+        for particle in self.particles:
+            layout.set_font_description(
+                Pango.FontDescription(f"{EMOJI_FONT} {particle.size:.0f}px"))
+            layout.set_text(particle.glyph, -1)
+            width, height = layout.get_pixel_size()
+            # Centred on the particle's own point, so `size` grows the glyph
+            # about where it is rather than dragging it down and to the right.
+            context.move_to(particle.x - width / 2.0,
+                            particle.y - height / 2.0)
+            context.push_group()
+            PangoCairo.show_layout(context, layout)
+            context.pop_group_to_source()
+            # Through a group rather than set_source_rgba before show_layout: a
+            # colour emoji is drawn from its own bitmaps and ignores the source
+            # colour entirely, so this is the only way the fade reaches it.
+            context.paint_with_alpha(particle.alpha)
+        return True
+
+
 class CostMeter(Gtk.Window):
     def __init__(self):
         super().__init__(title="Claude cost meter")
@@ -560,6 +729,24 @@ class CostMeter(Gtk.Window):
         self._roll_began = 0.0
         self._roll_ms = roll.BASE_MS
 
+        # Patrik mode. The swarm exists whether or not the mode is on, because an
+        # empty swarm costs nothing and code that has to ask whether it has one
+        # before every check reads far worse than code that asks whether it is
+        # running. `overlay` is built on the first burst and destroyed when the
+        # mode goes off; `_patrik_began` is what the shake's progress is measured
+        # from, and `_patrik_frame` the wall-clock of the last frame, so the
+        # glyphs advance by real elapsed time rather than by an assumed 16 ms.
+        self.swarm = patrik.Swarm()
+        self.shake = patrik.Shake()
+        self.overlay = None
+        self._patrik_source = None
+        self._patrik_began = 0.0
+        self._patrik_frame = 0.0
+        # Where the window sits for the duration of a shake, and what it is handed
+        # back to. Held rather than read per frame: read live it would drift by
+        # whatever the last frame's offset was, and the panel would walk.
+        self._patrik_base = None
+
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
         self.warning.set_no_show_all(True)
@@ -590,8 +777,12 @@ class CostMeter(Gtk.Window):
         self.alive = True
         self.sources = []
 
+        # False across the opening refresh below, so Patrik mode does not
+        # celebrate the figure that was already on disk when the panel opened.
+        self._opened = False
         self.watch()
         self.refresh()  # before place(), so the first anchor sees real content
+        self._opened = True
         self.place()
         self.connect("destroy", self.stop_timers)
         self.sources.append(
@@ -855,6 +1046,13 @@ class CostMeter(Gtk.Window):
         for source in self.sources:
             GLib.source_remove(source)
         self.sources = []
+        # Cleared rather than left holding a source id that has just been removed:
+        # `end_patrik` would otherwise remove it a second time, which GLib treats
+        # as a programmer error and warns about.
+        self._patrik_source = None
+        if self.overlay is not None:
+            self.overlay.destroy()
+            self.overlay = None
 
     def poll_usage(self):
         """Ask the server for the account's limits, off the main loop.
@@ -937,6 +1135,18 @@ class CostMeter(Gtk.Window):
             self._turn_stamp = stamp
             turn_rolling = self.roll.replay(
                 TURN_KEY, state.get("last_turn_usd") or 0.0)
+            # Patrik mode rides on the same test, and skips the panel's own
+            # opening refresh for the reason `Roll.replay` sets the row outright
+            # there: the figure on disk at startup has not just been charged, and
+            # celebrating it would announce a turn that was only read.
+            #
+            # `_opened` rather than "`_turn_stamp` was None", which is the same
+            # thing right up until a fresh install has no state.json at all --
+            # then the first turn ever recorded is a real one, and inferring
+            # startup from an absent stamp would be the one burst that most
+            # deserves to happen.
+            if self._opened and self.patrik_enabled():
+                self.celebrate()
 
         for key in WINDOW_KEYS:
             self.windows[key] = state.get(key) or {}
@@ -1132,6 +1342,22 @@ class CostMeter(Gtk.Window):
 
     def _persist_position(self):
         self._position_timer = None
+        if self._patrik_base is not None:
+            # A shake is moving the window at this very moment, so wherever it is
+            # now is not a position anybody chose. Come back once it has landed.
+            #
+            # This is the only route by which the celebration can reach the saved
+            # position, and it is a narrow one: letting go of a drag starts this
+            # debounce, and a turn landing inside those 700 ms has the panel
+            # mid-wobble when the timer arrives. Without this the offset is
+            # written to config.json and restored at every session afterwards.
+            #
+            # Rescheduling rather than dropping it: the drag that started this
+            # was real and still has to be recorded. The wait is bounded, because
+            # `_patrik_base` is cleared when the last glyph dies -- and glyphs
+            # have a lifetime measured in a couple of seconds.
+            self._position_timer = GLib.timeout_add(700, self._persist_position)
+            return False
         if self.at_anchor():
             # Settled exactly where we put it, so this was a resize re-anchor
             # rather than a choice; claiming it would freeze the panel in place.
@@ -1141,19 +1367,35 @@ class CostMeter(Gtk.Window):
         self.remember_position()
         return False
 
-    def show_menu(self, event):
-        menu = Gtk.Menu()
-        # Read as the menu is built, not cached: the CLI writes the same key,
-        # so a caption decided at startup could be a session out of date.
+    def menu_entries(self):
+        """The right-click menu, as (caption, handler) pairs in order.
+
+        A function of its own rather than a literal inside `show_menu` so the
+        order and the captions can be asserted without a pointer event to pop a
+        menu with. Both are things a test should hold: `Patrik mode` was asked for
+        directly under `Refresh now`, and a toggle whose caption points the wrong
+        way is the failure that goes unnoticed longest.
+
+        Every flag is read here, as the menu is built, and none is cached: the CLI
+        writes the same file, so a caption decided at startup could be a session
+        out of date.
+        """
         paused = autolaunch.paused()
-        for caption, handler in (
+        patrik_on = self.patrik_enabled()
+        return (
             ("Refresh now", lambda *_: self.refresh()),
+            ("Patrik mode off" if patrik_on else "Patrik mode",
+             lambda *_: self.set_patrik(not patrik_on)),
             ("Reset position", lambda *_: self.reset_position()),
             ("Reset size", lambda *_: self.reset_scale()),
             ("Resume auto-launch" if paused else "Pause auto-launch",
              lambda *_: self.set_autolaunch_paused(not paused)),
             ("Quit", lambda *_: Gtk.main_quit()),
-        ):
+        )
+
+    def show_menu(self, event):
+        menu = Gtk.Menu()
+        for caption, handler in self.menu_entries():
             item = Gtk.MenuItem(label=caption)
             item.connect("activate", handler)
             menu.append(item)
@@ -1175,6 +1417,182 @@ class CostMeter(Gtk.Window):
         self.update_config(
             lambda c: c.__setitem__(autolaunch.KEY, True) if paused
             else c.pop(autolaunch.KEY, None))
+
+    def patrik_enabled(self):
+        """Whether the panel celebrates a turn. Read from disk, never cached.
+
+        Off for anything but a literal `true`, which covers both a config written
+        before this existed and a hand-edited file with a string in it: a panel
+        that started throwing glyphs because somebody typed `"yes"` would be a
+        panel with no obvious way of being asked to stop.
+        """
+        config = store.read_json(paths.config_path(), default={}) or {}
+        return config.get(PATRIK_KEY) is True
+
+    def set_patrik(self, on):
+        """Turn the celebration on or off, for this panel and the next one.
+
+        Turning it off takes the overlay down there and then. Leaving one parked
+        is not merely untidy: it is a transparent, always-on-top window the user
+        cannot see and cannot reach, and the only thing that would ever remove it
+        is quitting the panel.
+
+        Switching it on deliberately does not celebrate. The menu item promises
+        the *next* turn, and a burst on the click would also fire on the state
+        already sitting on disk — the same trap `Roll.replay` documents for the
+        counting rows, where a figure merely read at startup must not be announced
+        as a new charge.
+        """
+        self.update_config(
+            lambda c: c.__setitem__(PATRIK_KEY, True) if on
+            else c.pop(PATRIK_KEY, None))
+        if not on:
+            self.end_patrik()
+
+    def panel_rect(self):
+        """The panel's rectangle in overlay coordinates: (x, y, width, height).
+
+        What `Swarm.burst` is handed, so the glyphs start on the rows rather than
+        somewhere in the margin. The overlay is the panel grown by PATRIK_MARGIN
+        on every side, so the panel sits at exactly that offset inside it.
+        """
+        size = self.get_size()
+        return (PATRIK_MARGIN, PATRIK_MARGIN, size.width, size.height)
+
+    def build_overlay(self):
+        """The glyph window, or None where the screen cannot composite one.
+
+        None is a first-class answer, not a failure. Without a compositor or an
+        RGBA visual the window would be drawn on an opaque background — a grey
+        slab over the desktop, which is far worse than no glyphs — so the mode
+        simply draws nothing and the meter carries on.
+
+        That is not caution for its own sake. This panel has already died once on
+        an `import gi` because a single DLL had no reputation with Smart App
+        Control, and the lesson recorded then applies here exactly: a decoration
+        must never be able to take the meter down with it.
+        """
+        screen = self.get_screen() or Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is None or not screen.is_composited():
+            return None
+        try:
+            overlay = PatrikOverlay(visual)
+            overlay.set_default_size(*self.overlay_size())
+            overlay.show_all()
+            overlay.let_clicks_through()
+        except Exception as error:
+            # Logged rather than swallowed, and logged rather than raised: the
+            # panel keeps running, and data/widget-output.log is where the reason
+            # a burst never appeared has to be findable.
+            log.write(f"patrik overlay: {error!r}")
+            return None
+        return overlay
+
+    def overlay_size(self):
+        size = self.get_size()
+        return (size.width + 2 * PATRIK_MARGIN, size.height + 2 * PATRIK_MARGIN)
+
+    def follow_overlay(self):
+        """Sit the overlay over the panel, centred on it.
+
+        Called on every frame rather than only at the start, because the panel can
+        move under it — the shake moves it deliberately, and a drag can move it
+        mid-burst. An overlay that stayed put would leave the glyphs behind.
+        """
+        if self.overlay is None:
+            return
+        x, y = self.get_position()
+        self.overlay.resize(*self.overlay_size())
+        self.overlay.move(x - PATRIK_MARGIN, y - PATRIK_MARGIN)
+
+    def celebrate(self):
+        """Throw a burst of glyphs and flinch. Called when a turn lands.
+
+        The caller decides what a turn is; this only obeys. `refresh()` runs from
+        the file monitor, the staleness poll, `Refresh now` and `__init__`, and
+        only one of those four is a charge — a burst driven by anything but
+        `updated_at` moving would spray the panel every minute.
+        """
+        if self.overlay is None:
+            self.overlay = self.build_overlay()
+        if self.overlay is None:
+            return
+        self.swarm.burst(patrik.BURST, self.panel_rect())
+        # The base is taken once per celebration rather than per frame: read live
+        # it would include the previous frame's offset, and the errors would
+        # accumulate into the panel walking across the screen.
+        if self._patrik_base is None:
+            self._patrik_base = tuple(self.get_position())
+        self._patrik_began = time.monotonic()
+        self._patrik_frame = self._patrik_began
+        if self._patrik_source is None:
+            self._patrik_source = GLib.timeout_add(PATRIK_FRAME_MS,
+                                                   self.on_patrik_frame)
+            self.sources.append(self._patrik_source)
+
+    def on_patrik_frame(self):
+        """One frame of the burst. False when there is nothing left to draw.
+
+        Elapsed time is measured rather than assumed: a frame that arrives late
+        has to advance the glyphs by however long it actually took, or a busy
+        machine plays the whole burst in slow motion.
+        """
+        now = time.monotonic()
+        dt, self._patrik_frame = now - self._patrik_frame, now
+        self.swarm.frame(dt)
+        self.shake_to((now - self._patrik_began) * 1000.0 / PATRIK_SHAKE_MS)
+        if self.overlay is not None:
+            self.follow_overlay()
+            self.overlay.particles = self.swarm.particles()
+            self.overlay.queue_draw()
+        if self.swarm.running():
+            return True
+        self.end_patrik()
+        return False
+
+    def shake_to(self, progress):
+        """Move the window to the shake's offset at `progress`, 0 to 1.
+
+        Always relative to `_patrik_base`, never to where the window is now: read
+        live, each frame would be offset from the previous frame's offset, the
+        errors would accumulate, and the panel would walk across the screen.
+
+        What keeps the wobble out of the saved position is not here — it is the
+        deferral in `_persist_position`, which is the only path that can record
+        one. Setting `_anchor` to the base for the duration was tried first and
+        does nothing: `at_anchor()` is consulted when the debounce fires, and by
+        then the window is back on its base whatever the anchor says.
+        """
+        if self._patrik_base is None:
+            return
+        base_x, base_y = self._patrik_base
+        dx, dy = self.shake.offset(progress)
+        self.move(base_x + dx, base_y + dy)
+
+    def end_patrik(self):
+        """Stop the burst, land the window, and take the overlay down.
+
+        Safe to call when nothing is running, because both places that need it —
+        the last frame, and the menu switching the mode off mid-burst — reach it
+        by different routes and neither can know what the other has already done.
+        """
+        if self._patrik_source is not None:
+            if self._patrik_source in self.sources:
+                self.sources.remove(self._patrik_source)
+            GLib.source_remove(self._patrik_source)
+            self._patrik_source = None
+        if self._patrik_base is not None:
+            # Explicitly, rather than trusting the last frame to have been the one
+            # at progress 1.0. An interrupted shake -- the mode switched off
+            # mid-wobble -- never reaches that frame, and a window left a few
+            # pixels out is a position the next debounce will record and keep.
+            self.move(*self._patrik_base)
+            self._patrik_base = None
+        self.swarm = patrik.Swarm()
+        if self.overlay is not None:
+            self.overlay.destroy()
+            self.overlay = None
 
     def reset_position(self):
         # Drop any debounce still in flight, or it would write the old position
