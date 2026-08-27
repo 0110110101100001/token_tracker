@@ -16,10 +16,30 @@ user chose. A shake that ended a pixel out would be written to config.json as a
 deliberate move, and the panel would walk across the screen a pixel per turn.
 """
 
+import ctypes
+import os
 import random
+import time
 import unittest
+import unittest.mock
+from datetime import datetime
 
-from cost_meter import patrik
+import widget
+from cost_meter import launch, patrik, paths, store
+from tests.support import TempHome
+from tests.test_widget import own_hwnds_titled
+
+HAS_DISPLAY = launch.has_display()
+
+if HAS_DISPLAY:
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk, Gtk
+
+GWL_EXSTYLE = -20
+WS_EX_TRANSPARENT = 0x00000020
 
 
 # The panel's rectangle inside the overlay window. The overlay is the panel plus
@@ -257,6 +277,447 @@ class ShakeTest(unittest.TestCase):
         shake = patrik.Shake(amplitude=0)
         for step in range(21):
             self.assertEqual(shake.offset(step / 20), (0, 0))
+
+
+
+# ---------------------------------------------------------------------------
+# The wiring into the panel. Everything above needs no display; everything below
+# builds a real CostMeter, for the reason tests/test_widget.py gives for its own
+# window tests -- the questions here are not what the code asks for but what GTK
+# and the window manager actually do with it, and on Windows those came apart
+# once already.
+
+
+def a_state(written, turn_usd=0.25):
+    """A state.json whose `updated_at` is what says whether a turn is new.
+
+    Written near the present rather than at a round epoch: anything older than
+    summary.STALE_AFTER_SECONDS is stale, and a stale panel deliberately cancels
+    its animations -- which would make every assertion below pass or fail for a
+    reason that has nothing to do with Patrik mode.
+    """
+    return {"updated_at": datetime.fromtimestamp(written).astimezone().isoformat(),
+            "last_turn_usd": turn_usd,
+            "session": {"id": "s1", "usd": 1.0},
+            "today_usd": 1.0,
+            "window_5h": {"usd": 2.0},
+            "window_7d": {"usd": 3.0},
+            "limits": None,
+            "unknown_models": []}
+
+
+class PanelTest(TempHome):
+    """A real panel, torn down after each test, sharing one COST_METER_HOME."""
+
+    def setUp(self):
+        super().setUp()
+        # A clock the test drives. The burst advances by real elapsed time, which
+        # is right on screen and useless here: a tight loop of on_patrik_frame
+        # would see a dt of nearly zero every time, so the glyphs would never
+        # fade, the shake would never leave progress 0, and every assertion below
+        # would pass without exercising anything.
+        self.clock = 10_000.0
+        patcher = unittest.mock.patch.object(
+            widget.time, "monotonic", lambda: self.clock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.window = widget.CostMeter()
+        # No main loop here, so the close handler would turn teardown into a
+        # Gtk-CRITICAL.
+        self.window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(self.window.destroy)
+        self.addCleanup(self.window.update_config,
+                        lambda c: c.pop("widget_position", None))
+        self.addCleanup(self.window.update_config,
+                        lambda c: c.pop(widget.PATRIK_KEY, None))
+
+    def config(self):
+        return store.read_json(paths.config_path(), default={}) or {}
+
+    def turn(self, turn_usd=0.25):
+        """Land a turn: a state.json with a new `updated_at`, then a repaint.
+
+        Each call steps a second further back, because `updated_at` moving is the
+        whole test of whether a turn is new and two calls inside one clock tick
+        would produce the same string.
+        """
+        self._turns = getattr(self, "_turns", 0) + 1
+        store.write_json_atomic(paths.state_path(),
+                                a_state(time.time() - self._turns, turn_usd))
+        self.window.refresh()
+
+    def tick(self, seconds=0.016):
+        """One frame, `seconds` after the last. Returns what GLib would see."""
+        self.clock += seconds
+        return self.window.on_patrik_frame()
+
+    def drive(self, limit=4000):
+        """Frames until the burst reports itself finished. True if it did."""
+        for _ in range(limit):
+            if not self.tick():
+                return True
+        return False
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class MenuTest(PanelTest):
+    """Where the item sits, and which way its caption points.
+
+    The position is asserted rather than left to reading the source because it
+    was the request: directly under `Refresh now`, not appended at the end next
+    to `Quit`, where a celebration toggle would sit beside the one item nobody
+    wants to hit by accident.
+    """
+
+    def captions(self):
+        return [caption for caption, _ in self.window.menu_entries()]
+
+    def test_it_sits_directly_under_refresh_now(self):
+        captions = self.captions()
+        self.assertEqual(captions[captions.index("Refresh now") + 1],
+                         "Patrik mode")
+
+    def test_the_caption_says_what_the_click_will_do(self):
+        # Read as the menu is built rather than cached, exactly as the
+        # auto-launch pause is: another process writes the same file.
+        self.window.set_patrik(True)
+        self.assertIn("Patrik mode off", self.captions())
+        self.window.set_patrik(False)
+        self.assertIn("Patrik mode", self.captions())
+
+    def test_every_entry_still_has_a_handler(self):
+        for caption, handler in self.window.menu_entries():
+            self.assertTrue(callable(handler), caption)
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class ToggleTest(PanelTest):
+    def test_it_is_off_until_it_is_asked_for(self):
+        """A panel that celebrated unasked would be a panel nobody can read."""
+        self.assertFalse(self.window.patrik_enabled())
+
+    def test_the_setting_outlives_the_panel(self):
+        self.window.set_patrik(True)
+        second = widget.CostMeter()
+        second.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(second.destroy)
+        self.assertTrue(second.patrik_enabled())
+
+    def test_toggling_leaves_the_window_position_alone(self):
+        # The same file carries the position and the scale, and every writer of
+        # it goes through update_config for exactly this reason.
+        self.window.update_config(
+            lambda c: c.__setitem__("widget_position", [7, 9]))
+        self.window.set_patrik(True)
+        self.window.set_patrik(False)
+        self.assertEqual(self.config().get("widget_position"), [7, 9])
+
+    def test_turning_it_off_leaves_no_key_behind(self):
+        self.window.set_patrik(True)
+        self.window.set_patrik(False)
+        self.assertNotIn(widget.PATRIK_KEY, self.config())
+
+    def test_turning_it_off_takes_the_overlay_down(self):
+        # The overlay is a second always-on-top window. Leaving one parked over
+        # the desktop after the mode was switched off is a window the user
+        # cannot see, cannot reach and did not ask for.
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertIsNotNone(self.window.overlay)
+        self.window.set_patrik(False)
+        self.assertIsNone(self.window.overlay)
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class CelebrationTest(PanelTest):
+    """What makes the glyphs fly, and -- mostly -- what must not."""
+
+    def test_a_new_turn_throws_glyphs(self):
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertTrue(self.window.swarm.running())
+
+    def test_a_new_turn_throws_nothing_while_the_mode_is_off(self):
+        self.turn()
+        self.assertFalse(self.window.swarm.running())
+
+    def test_a_repaint_that_is_not_a_turn_throws_nothing(self):
+        """refresh() runs four ways and only one of them is a turn.
+
+        The file monitor, the 60-second staleness poll, `Refresh now` and
+        __init__ all re-read a state.json that has not changed. A burst driven by
+        anything but `updated_at` moving would spray the panel every minute.
+        """
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertTrue(self.drive(), "the burst never finished")
+        self.window.refresh()          # same state.json, no new turn
+        self.assertFalse(self.window.swarm.running())
+
+    def test_switching_it_on_does_not_celebrate_by_itself(self):
+        # Turning the mode on is not a turn. The first burst waits for the next
+        # one, which is what the menu item promises.
+        self.window.set_patrik(True)
+        self.assertFalse(self.window.swarm.running())
+
+    def test_the_first_repaint_after_switching_on_is_not_a_turn_either(self):
+        """__init__ reads a state.json that already has a last turn in it.
+
+        Without this the panel would celebrate a turn that had merely been read
+        off disk -- the same trap `Roll.replay` documents for the counting rows.
+        """
+        self.turn()              # a turn the panel has already seen
+        self.window.set_patrik(True)
+        self.window.refresh()
+        self.assertFalse(self.window.swarm.running())
+
+    def test_a_panel_opening_on_an_existing_turn_does_not_celebrate(self):
+        """The figure on disk at startup has not just been charged.
+
+        __init__ runs a refresh of its own, and to that refresh every stamp is a
+        new one. Celebrating there would throw a burst for a turn the panel had
+        only read -- and, because auto-launch opens a panel at every session
+        start, it would do it on every single session.
+        """
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertTrue(self.drive(), "the burst never finished")
+        second = widget.CostMeter()
+        second.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(second.destroy)
+        self.assertFalse(second.swarm.running())
+        self.assertIsNone(second.overlay)
+
+    def test_a_first_ever_turn_is_still_celebrated(self):
+        """The case that separates `_opened` from "no stamp yet".
+
+        A fresh install has no state.json, so the panel's opening refresh reads
+        nothing and records no stamp. The next turn is then both the first this
+        panel has seen and a real charge, and it is the one burst that most
+        deserves to happen.
+        """
+        self.assertIsNone(self.window._turn_stamp)
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertTrue(self.window.swarm.running())
+
+    def test_the_frame_timer_stops_once_the_last_glyph_is_gone(self):
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertIsNotNone(self.window._patrik_source)
+        self.assertTrue(self.drive(), "the burst never finished")
+        self.assertFalse(self.window.swarm.running())
+        self.assertIsNone(self.window._patrik_source)
+
+    def test_destroying_the_panel_takes_the_frame_timer_with_it(self):
+        # A GLib timeout belongs to the main context rather than to the widget
+        # that registered it, so a destroyed panel would otherwise keep waking
+        # up at 16 ms for the life of the process.
+        self.window.set_patrik(True)
+        self.turn()
+        source = self.window._patrik_source
+        self.assertIn(source, self.window.sources)
+        self.window.stop_timers()
+        self.assertIsNone(self.window._patrik_source)
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class ShakeWiringTest(PanelTest):
+    """The flinch, and the position bookkeeping it must not disturb.
+
+    This is the failure the whole design was arranged around. The panel shakes by
+    moving its own window, and widget.py reads a window away from its anchor as a
+    position the user chose and writes it to config.json. Get this wrong and the
+    panel walks across the screen a few pixels per turn, permanently, in a file
+    the user never edited.
+    """
+
+    def test_the_window_ends_up_exactly_where_it_started(self):
+        self.window.set_patrik(True)
+        before = tuple(self.window.get_position())
+        self.turn()
+        self.assertTrue(self.drive(), "the burst never finished")
+        self.assertEqual(tuple(self.window.get_position()), before)
+
+    def test_the_shake_is_not_recorded_as_a_position_the_user_chose(self):
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertTrue(self.drive(), "the burst never finished")
+        # What the debounce would eventually call. Called directly because the
+        # test has no main loop for the 700 ms timer to fire in.
+        self.window._persist_position()
+        self.assertNotIn("widget_position", self.config())
+
+    def test_a_shake_after_the_user_moved_the_panel_keeps_their_position(self):
+        """The case a naive shake gets wrong.
+
+        `_persist_position` clears the anchor once the user has chosen a spot, so
+        from then on `at_anchor()` is False and every shake looks like a fresh
+        drag. The saved coordinates have to be the ones the user dropped it at,
+        not wherever a frame of the wobble happened to leave it.
+        """
+        self.window.update_config(
+            lambda c: c.__setitem__("widget_position", [140, 160]))
+        self.window.place()
+        self.window.user_positioned = True
+        self.window._anchor = None
+        chosen = tuple(self.window.get_position())
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertTrue(self.drive(), "the burst never finished")
+        self.window._persist_position()
+        self.assertEqual(tuple(self.window.get_position()), chosen)
+        self.assertEqual(tuple(self.config().get("widget_position")), chosen)
+
+    def test_a_debounce_already_in_flight_does_not_save_a_frame_of_the_wobble(self):
+        """The walking bug, by the one route that actually reaches it.
+
+        Letting go of a drag starts a 700 ms debounce. If a turn lands inside that
+        window, the shake is moving the panel at the moment the timer fires, and
+        what reaches config.json is wherever the wobble happened to be -- a
+        position nobody chose, restored at every session from then on, in a file
+        the user never edited.
+
+        Landing the window back on its base is not enough to prevent this, which
+        is why the test drives exactly one frame and then fires the debounce by
+        hand: at that instant the panel is genuinely off its base, and every
+        no-op-looking guard in the position code has already been passed.
+        """
+        self.window.update_config(
+            lambda c: c.__setitem__("widget_position", [140, 160]))
+        self.window.place()
+        self.window.user_positioned = True
+        self.window._anchor = None
+        chosen = tuple(self.window.get_position())
+        self.window.set_patrik(True)
+        self.turn()
+        self.tick()
+        self.assertNotEqual(tuple(self.window.get_position()), chosen,
+                            "the panel should be mid-wobble here")
+        # What the debounce does when it fires. Called directly because the test
+        # has no main loop for a 700 ms timer to arrive in.
+        self.window._persist_position()
+        self.assertEqual(tuple(self.config().get("widget_position") or ()),
+                         chosen)
+
+    def test_switching_the_mode_off_mid_wobble_lands_the_window(self):
+        """Nothing else will put it back.
+
+        The frame at progress 1.0 is what normally returns the panel to its base,
+        and an interrupted shake never reaches that frame. A window abandoned a
+        few pixels out is the walking bug arriving by the back door: the next
+        debounce records the offset as a position, and it sticks.
+        """
+        self.window.set_patrik(True)
+        before = tuple(self.window.get_position())
+        self.turn()
+        self.tick()
+        self.assertNotEqual(tuple(self.window.get_position()), before)
+        self.window.set_patrik(False)
+        self.assertEqual(tuple(self.window.get_position()), before)
+
+    def test_the_wobble_never_strays_further_than_its_amplitude(self):
+        """Every offset is measured from the base, not from the last frame.
+
+        Read live, a frame would add its offset to the offset the frame before it
+        left behind, the errors would compound, and the panel would wander off
+        across the desktop for the length of the burst. `end_patrik` puts it back
+        on its base at the end, so nothing afterwards would show it had happened
+        -- which is exactly why the straying has to be caught while it strays.
+        """
+        self.window.set_patrik(True)
+        base_x, base_y = self.window.get_position()
+        self.turn()
+        for _ in range(120):
+            self.tick()
+            x, y = self.window.get_position()
+            self.assertLessEqual(abs(x - base_x), patrik.SHAKE_AMPLITUDE)
+            self.assertLessEqual(abs(y - base_y), patrik.SHAKE_AMPLITUDE)
+
+    def test_the_panel_really_does_move_during_the_shake(self):
+        self.window.set_patrik(True)
+        before = tuple(self.window.get_position())
+        self.turn()
+        seen = set()
+        for _ in range(60):
+            self.tick()
+            seen.add(tuple(self.window.get_position()))
+        self.assertNotEqual(seen, {before}, "the panel never flinched")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class OverlayTest(PanelTest):
+    def test_the_overlay_reaches_beyond_the_panel_on_every_side(self):
+        """Room for the glyphs to be seen crossing the edge rather than clipped."""
+        self.window.set_patrik(True)
+        self.turn()
+        panel = self.window.get_size()
+        overlay = self.window.overlay.get_size()
+        self.assertGreater(overlay.width, panel.width)
+        self.assertGreater(overlay.height, panel.height)
+
+    def test_the_panel_rectangle_sits_inside_the_overlay(self):
+        # What Swarm.burst is handed, so the glyphs start on the rows rather than
+        # in a corner of the margin.
+        self.window.set_patrik(True)
+        self.turn()
+        x, y, width, height = self.window.panel_rect()
+        overlay = self.window.overlay.get_size()
+        self.assertGreater(x, 0)
+        self.assertGreater(y, 0)
+        self.assertLessEqual(x + width, overlay.width)
+        self.assertLessEqual(y + height, overlay.height)
+
+    def test_the_overlay_stays_out_of_the_taskbar(self):
+        # UTILITY for the same reason the panel is: it is what win32 turns into
+        # WS_EX_TOOLWINDOW, and a decoration window with an Alt-Tab entry is
+        # worse than no effect at all.
+        self.window.set_patrik(True)
+        self.turn()
+        self.assertEqual(self.window.overlay.get_type_hint(),
+                         Gdk.WindowTypeHint.UTILITY)
+
+    def test_without_a_compositor_the_panel_carries_on(self):
+        """No overlay is a panel with no glyphs, never a panel that fell over.
+
+        The precedent is this project's own history: the panel died on `import
+        gi` because one DLL had no reputation with Smart App Control. A
+        celebration must never be able to take the meter with it.
+        """
+        self.window.set_patrik(True)
+        with unittest.mock.patch.object(
+                Gdk.Screen, "get_rgba_visual", return_value=None):
+            self.turn()
+        self.assertIsNone(self.window.overlay)
+        self.assertEqual(self.window.last_turn.get_text(), "+$0.25")
+
+
+@unittest.skipUnless(HAS_DISPLAY and os.name == "nt",
+                     "Windows click-through rules")
+class ClickThroughTest(PanelTest):
+    """The overlay must not eat clicks meant for whatever is underneath it.
+
+    Measured, not assumed, and this is the second time this project has had to:
+    GDK's win32 backend accepts `set_pass_through(True)` and an empty input
+    shape and does nothing with either -- neither sets WS_EX_TRANSPARENT, which
+    is the documented condition for a window that clicks fall through. Left at
+    the GTK call, a transparent window the size of the panel plus its margin
+    would swallow every click in that rectangle for as long as the mode was on,
+    and nothing on screen would explain why the desktop had stopped responding.
+
+    Exactly the shape of the taskbar bug in tests/test_widget.py: a hint the
+    backend takes and drops, and code that reads as though it had worked.
+    """
+
+    def test_clicks_fall_through_the_overlay(self):
+        self.window.set_patrik(True)
+        self.turn()
+        hwnds = own_hwnds_titled(widget.OVERLAY_TITLE)
+        self.assertEqual(len(hwnds), 1, "expected exactly one overlay window")
+        exstyle = ctypes.windll.user32.GetWindowLongW(
+            ctypes.c_void_p(hwnds[0]), GWL_EXSTYLE)
+        self.assertTrue(exstyle & WS_EX_TRANSPARENT,
+                        f"overlay would swallow clicks: exstyle 0x{exstyle:08X}")
 
 
 if __name__ == "__main__":
