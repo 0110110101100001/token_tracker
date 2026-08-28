@@ -38,6 +38,21 @@ def config_path():
     return home() / "config.json"
 
 
+def sounds_dir():
+    """Where the celebration's sounds live.
+
+    Under the project rather than under home(): these ship with the code and are
+    the same on every machine, while home() is the ledger -- a per-machine
+    directory every test redirects and a user could reasonably delete. A sound
+    that vanished with the ledger would be a feature that switched itself off.
+    """
+    return project_root() / "sounds"
+
+
+def sound_path(name):
+    return sounds_dir() / name
+
+
 def usage_path():
     """Where our own read of the account's limits lands.
 

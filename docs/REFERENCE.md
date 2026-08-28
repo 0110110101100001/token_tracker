@@ -211,6 +211,7 @@ Delete the file to reset all of them.
 | `widget_scale` | How large the panel is, from `0.7` to `3.0`, as saved by dragging an edge. Right click → **Reset size** removes it. See [Moving and resizing it](PANEL.md#moving-and-resizing-it). |
 | `autolaunch_paused` | `true` when Claude Code sessions are not allowed to open the panel. Set it with `pixi run autolaunch -- --off`, or the panel's own **Pause auto-launch**. Recording is unaffected — see [Keep the panel closed](../README.md#keep-the-panel-closed). |
 | `patrik_mode` | `true` when the panel throws money glyphs and flinches on every new turn. Set by right click → **Patrik mode**; anything but a literal `true` counts as off. See [Patrik mode](PANEL.md#patrik-mode). |
+| `sound` | `true` when every new turn plays a short sound, picked by what the session has cost so far. Set by right click → **Sound**; anything but a literal `true` counts as off, and it is independent of `patrik_mode`. See [Sound](PANEL.md#sound). |
 | `usage_poll_seconds` | How often the panel asks the server for the account's limit figures, in seconds. Defaults to `60`; `0` switches the fetch off and leaves the rows on Claude Code's own cache. Below about ten seconds the endpoint refuses outright — see [Where the limit figures come from](METERING.md#where-the-limit-figures-come-from). |
 
 ## Troubleshooting
