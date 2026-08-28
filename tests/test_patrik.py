@@ -615,15 +615,15 @@ class MenuTest(PanelTest):
     def test_it_sits_directly_under_refresh_now(self):
         captions = self.captions()
         self.assertEqual(captions[captions.index("Refresh now") + 1],
-                         "Patrik mode")
+                         "Set Patrik mode on")
 
     def test_the_caption_says_what_the_click_will_do(self):
         # Read as the menu is built rather than cached, exactly as the
         # auto-launch pause is: another process writes the same file.
         self.window.set_patrik(True)
-        self.assertIn("Patrik mode off", self.captions())
+        self.assertIn("Set Patrik mode off", self.captions())
         self.window.set_patrik(False)
-        self.assertIn("Patrik mode", self.captions())
+        self.assertIn("Set Patrik mode on", self.captions())
 
     def test_every_entry_still_has_a_handler(self):
         for caption, handler in self.window.menu_entries():
@@ -904,7 +904,9 @@ class ShakeWiringTest(PanelTest):
         """
         self.window.update_config(
             lambda c: c.__setitem__("widget_position", [140, 160]))
-        self.window.place()
+        # Moved outright rather than through place(), which no longer restores a
+        # saved position -- see SpawnPositionTest in tests/test_widget.py.
+        self.window.move(140, 160)
         self.window.user_positioned = True
         self.window._anchor = None
         chosen = tuple(self.window.get_position())
@@ -931,7 +933,9 @@ class ShakeWiringTest(PanelTest):
         """
         self.window.update_config(
             lambda c: c.__setitem__("widget_position", [140, 160]))
-        self.window.place()
+        # Moved outright rather than through place(), which no longer restores a
+        # saved position -- see SpawnPositionTest in tests/test_widget.py.
+        self.window.move(140, 160)
         self.window.user_positioned = True
         self.window._anchor = None
         chosen = tuple(self.window.get_position())

@@ -117,6 +117,67 @@ class AutolaunchToggleTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")
+class SpawnPositionTest(unittest.TestCase):
+    """Where a fresh panel opens, and why the saved spot no longer decides it.
+
+    A saved position carries the monitor it was chosen on. Restore it and a panel
+    once dragged onto a second screen opens there for every session after --
+    correctly, and invisibly to anyone watching the first screen. It is the worst
+    kind of failure to look into, because nothing is broken: `pixi run start`
+    reports a spawned pid, the process runs, the window is mapped and
+    `IsWindowVisible` says true, and the log has nothing to report.
+
+    The origin sits on the primary monitor, which is the screen somebody who
+    just started the panel is certain to be watching.
+    """
+
+    def setUp(self):
+        self.window = widget.CostMeter()
+        self.window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(self.window.destroy)
+        self.addCleanup(self.window.update_config,
+                        lambda c: c.pop("widget_position", None))
+
+    def test_it_opens_at_the_origin(self):
+        self.window.place()
+        self.assertEqual(tuple(self.window.get_position()),
+                         widget.SPAWN_POSITION)
+
+    def test_a_saved_position_does_not_move_it(self):
+        self.window.update_config(
+            lambda c: c.__setitem__("widget_position", [640, 480]))
+        self.window.place()
+        self.assertEqual(tuple(self.window.get_position()),
+                         widget.SPAWN_POSITION)
+
+    def test_a_position_on_another_monitor_does_not_follow_it(self):
+        # Measured off the panel this rule came out of, sitting on the second
+        # monitor. GTK's own figures, and worth keeping as such: Win32 put the
+        # same window at (3412, 527), and the 1.25 between the pairs is the
+        # display scaling. Read as Win32 coordinates these look like a panel
+        # dragged off the end of the desktop, which is exactly the wrong
+        # conclusion -- there was never anything off-screen about it.
+        self.window.update_config(
+            lambda c: c.__setitem__("widget_position", [4265, 659]))
+        self.window.place()
+        self.assertEqual(tuple(self.window.get_position()),
+                         widget.SPAWN_POSITION)
+
+    def test_the_automatic_anchor_does_not_pull_it_back(self):
+        """The origin has to survive the first resize.
+
+        on_size_allocate re-anchors to the bottom-right corner whenever the
+        panel has not been positioned by the user, and it runs on every size
+        change -- so a place() that left that flag alone would put the window at
+        the origin and have it slide away again a frame later.
+        """
+        self.window.place()
+        self.window.on_size_allocate(None, None)
+        self.assertEqual(tuple(self.window.get_position()),
+                         widget.SPAWN_POSITION)
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
 class TaskbarTest(unittest.TestCase):
     def setUp(self):
         self.window = widget.CostMeter()

@@ -273,14 +273,14 @@ class SoundMenuTest(PanelTest):
     def test_it_sits_directly_under_patrik_mode(self):
         captions = self.captions()
         index = next(i for i, caption in enumerate(captions)
-                     if caption.startswith("Patrik mode"))
-        self.assertEqual(captions[index + 1], "Sound")
+                     if caption.startswith("Set Patrik mode"))
+        self.assertEqual(captions[index + 1], "Set sound on")
 
     def test_the_caption_says_what_the_click_will_do(self):
         self.window.set_sound(True)
-        self.assertIn("Sound off", self.captions())
+        self.assertIn("Set sound off", self.captions())
         self.window.set_sound(False)
-        self.assertIn("Sound", self.captions())
+        self.assertIn("Set sound on", self.captions())
 
     def test_every_entry_still_has_a_handler(self):
         for caption, handler in self.window.menu_entries():

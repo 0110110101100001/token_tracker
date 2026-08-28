@@ -32,6 +32,26 @@ from cost_meter import (autolaunch, log, patrik, paths, roll, sound,  # noqa: E4
                         store, summary, usage_api, utilization)
 
 MARGIN = 24
+# Where a fresh panel opens, every time, whatever config.json remembers.
+#
+# What a saved position really remembers is which *monitor* the panel was on,
+# and that is the part that goes wrong. Drag the panel onto a second screen and
+# every session from then on opens it there -- faithfully, and invisibly to
+# anyone watching the first screen. There is nothing to diagnose from: the
+# launcher reports a spawned pid, the process runs, the window is mapped and
+# visible, and the log has nothing to say, because nothing went wrong. The panel
+# is simply on a display nobody is looking at.
+#
+# The origin sits on the primary monitor by definition, which is the one screen
+# somebody who just started the panel is certain to be watching.
+#
+# Positions here are GTK's, and on a scaled display they are not Win32's: the
+# two differ by the scale factor, so GTK's (4265, 659) was Win32's (3412, 527)
+# on a 125% screen. Comparing a figure out of config.json against a monitor
+# bound read from Windows therefore proves nothing, and reading one as the other
+# is what made a panel on the second monitor look like a panel off the desktop.
+# See SpawnPositionTest in tests/test_widget.py.
+SPAWN_POSITION = (0, 0)
 WIDTH = 240
 # Drag-to-resize. The panel scales as one piece — font, padding and width
 # together — rather than the frame alone: the content is a fixed set of rows, so
@@ -924,18 +944,26 @@ class CostMeter(Gtk.Window):
         return True
 
     def place(self):
-        config = store.read_json(paths.config_path(), default={}) or {}
-        position = config.get("widget_position")
-        self.user_positioned = bool(position)
-        self._anchor = None
-        if position:
-            # Restoring a saved position is a move we make ourselves, so record
-            # it as the anchor too; otherwise every startup writes the same
-            # coordinates straight back and takes the lock to do it.
-            self._anchor = (int(position[0]), int(position[1]))
-            self.move(*self._anchor)
-            return
-        self.anchor_bottom_right()
+        """Open at SPAWN_POSITION, whatever config.json remembers.
+
+        The saved position is deliberately not read back. What it carries is the
+        monitor the panel was last dragged to, and restoring that is how a panel
+        goes missing: it opens on the second screen, correctly and every time,
+        while whoever started it watches the first one and sees nothing.
+
+        `user_positioned` is set here rather than left as it was, and that is
+        what makes the origin stick. on_size_allocate re-anchors to the
+        bottom-right corner on every size change while the flag is False, so
+        without this the window would be put at the origin and slide off it a
+        frame later, as soon as the first row was measured.
+
+        Dragging the panel still moves it and is still persisted -- only the
+        restore is gone, so what a drag writes now lasts for the session rather
+        than for the install.
+        """
+        self.user_positioned = True
+        self._anchor = SPAWN_POSITION
+        self.move(*self._anchor)
 
     def anchor_bottom_right(self):
         """Seat the window in the bottom-right corner of the work area.
@@ -1403,9 +1431,9 @@ class CostMeter(Gtk.Window):
         sound_on = self.sound_enabled()
         return (
             ("Refresh now", lambda *_: self.refresh()),
-            ("Patrik mode off" if patrik_on else "Patrik mode",
+            ("Set Patrik mode off" if patrik_on else "Set Patrik mode on",
              lambda *_: self.set_patrik(not patrik_on)),
-            ("Sound off" if sound_on else "Sound",
+            ("Set sound off" if sound_on else "Set sound on",
              lambda *_: self.set_sound(not sound_on)),
             ("Reset position", lambda *_: self.reset_position()),
             ("Reset size", lambda *_: self.reset_scale()),
