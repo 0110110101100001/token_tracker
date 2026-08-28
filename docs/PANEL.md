@@ -192,6 +192,41 @@ The glyphs are 🤑, 💲, 💰 and 💵. 🪙 is the obvious fifth and is delib
 absent: Segoe UI Emoji on Windows 10 has no glyph for it, so it draws as an empty
 box.
 
+## Sound
+
+Right click the panel and pick **Sound**. From the next turn on, each one plays a
+short sound, and *which* sound is what the session has cost so far: one tone
+under $10, two from $10, three from $20 and four from $30 — the same figures the
+glyph rate steps at, because they are the same idea said twice. It stays on until
+you pick **Sound off**, and it survives a restart, in `data/config.json` under
+`sound`.
+
+It is its own switch rather than part of Patrik mode, and that is the point:
+glyphs play on your own screen and a sound plays in whatever room you are sitting
+in. Either can be on without the other.
+
+The same gating as the glyphs, and for the same reasons. Only a genuinely new
+turn plays — the file monitor, the staleness poll and **Refresh now** all re-read
+a `state.json` that has not changed, and a sound on those would be a panel
+beeping every minute all day. The panel's own opening refresh is skipped too,
+because auto-launch opens a panel at every session start and the figure already
+on disk has not just been charged.
+
+The four files live in `sounds/`, and they are placeholders: `pixi run sounds`
+regenerates them from `cost_meter/sound.py`, which synthesises plain sine tones
+with the standard library. To use your own, drop four WAVs of the same names over
+them — `under-10.wav`, `over-10.wav`, `over-20.wav`, `over-30.wav`. WAV is not an
+oversight: on Windows the player is `winsound` from the standard library, which
+plays nothing else, and the alternative was a GStreamer stack whose every DLL is
+another file for Smart App Control to have no opinion about.
+
+On Linux the panel plays through whichever of `paplay`, `pw-play` or `aplay` it
+finds first. **Where there is none of them, or no file, there is silence** and a
+line in `data/cost-meter.log` — never a stalled panel. The sound is spawned
+rather than waited on, so a slow sound server cannot freeze the figures, and it
+is the same rule the overlay follows where a screen cannot composite: a
+decoration must never take the meter down.
+
 ## Moving and resizing it
 
 Drag the **middle** of the panel to move it. Drag **any edge or corner** to

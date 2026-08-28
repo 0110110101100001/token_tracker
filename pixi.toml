@@ -103,6 +103,12 @@ autolaunch = "python -m cost_meter.autolaunch"
 # Register the Stop and SessionStart hooks in ~/.claude/settings.json.
 install-hooks = "python -m cost_meter.install"
 
+# Rewrite the four placeholder sounds under sounds/. They are committed, so this
+# is not part of any normal run -- it exists so four short WAVs in the tree are
+# files somebody can regenerate and explain rather than files of unknown origin.
+# Swapping in real recordings is dropping four WAVs of the same names over them.
+sounds = "python -m cost_meter.sound"
+
 [target.linux-64.tasks]
 # The panel in the foreground.
 #

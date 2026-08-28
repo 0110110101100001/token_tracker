@@ -28,7 +28,7 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import (Gdk, Gio, GLib, Gtk, Pango,  # noqa: E402
                            PangoCairo)
 
-from cost_meter import (autolaunch, log, patrik, paths, roll,  # noqa: E402
+from cost_meter import (autolaunch, log, patrik, paths, roll, sound,  # noqa: E402
                         store, summary, usage_api, utilization)
 
 MARGIN = 24
@@ -105,6 +105,11 @@ ROLL_MIN_DELTA = 0.01
 # menu says otherwise, and the key lives in the same config.json as the position
 # and the scale, so it outlives the panel that was asked for it.
 PATRIK_KEY = "patrik_mode"
+# The audible half, on its own key rather than inside Patrik mode's. Two
+# switches because they are two decisions: an animation plays on your own screen,
+# a sound plays in whatever room you are sitting in, and somebody who wants the
+# glyphs in an open-plan office wants exactly one of them.
+SOUND_KEY = "sound"
 # The glyphs are drawn in a second, transparent, always-on-top window rather than
 # inside the panel, because the whole point is that they leave it. This is how far
 # that window reaches past the panel on every side: enough for a glyph thrown at
@@ -1151,9 +1156,15 @@ class CostMeter(Gtk.Window):
             # then the first turn ever recorded is a real one, and inferring
             # startup from an absent stamp would be the one burst that most
             # deserves to happen.
+            session_usd = (state.get("session") or {}).get("usd")
             if self._opened and self.patrik_enabled():
-                self.celebrate(state.get("last_turn_usd") or 0.0,
-                               (state.get("session") or {}).get("usd"))
+                self.celebrate(state.get("last_turn_usd") or 0.0, session_usd)
+            # Independently of the glyphs, and gated on `_opened` for the same
+            # reason: auto-launch opens a panel at every session start, and the
+            # figure already on disk has not just been charged. A noise on that
+            # would be the panel greeting a session it did not witness.
+            if self._opened and self.sound_enabled():
+                sound.play_for(session_usd)
 
         for key in WINDOW_KEYS:
             self.windows[key] = state.get(key) or {}
@@ -1389,10 +1400,13 @@ class CostMeter(Gtk.Window):
         """
         paused = autolaunch.paused()
         patrik_on = self.patrik_enabled()
+        sound_on = self.sound_enabled()
         return (
             ("Refresh now", lambda *_: self.refresh()),
             ("Patrik mode off" if patrik_on else "Patrik mode",
              lambda *_: self.set_patrik(not patrik_on)),
+            ("Sound off" if sound_on else "Sound",
+             lambda *_: self.set_sound(not sound_on)),
             ("Reset position", lambda *_: self.reset_position()),
             ("Reset size", lambda *_: self.reset_scale()),
             ("Resume auto-launch" if paused else "Pause auto-launch",
@@ -1435,6 +1449,29 @@ class CostMeter(Gtk.Window):
         """
         config = store.read_json(paths.config_path(), default={}) or {}
         return config.get(PATRIK_KEY) is True
+
+    def sound_enabled(self):
+        """Whether a turn makes a noise. Read from disk, never cached.
+
+        Off for anything but a literal `true`, exactly as `patrik_enabled` is: a
+        panel that started beeping because somebody hand-edited `"yes"` into the
+        config would be a panel with no obvious way of being asked to stop, and
+        this one is audible to a whole room rather than only to its owner.
+        """
+        config = store.read_json(paths.config_path(), default={}) or {}
+        return config.get(SOUND_KEY) is True
+
+    def set_sound(self, on):
+        """Turn the sound on or off, for this panel and the next one.
+
+        Nothing plays on the click. The menu item promises the *next* turn, and
+        a sound here would also fire on the state already sitting on disk -- the
+        trap `Roll.replay` documents for the counting rows and `set_patrik` for
+        the glyphs, reached a third way.
+        """
+        self.update_config(
+            lambda c: c.__setitem__(SOUND_KEY, True) if on
+            else c.pop(SOUND_KEY, None))
 
     def set_patrik(self, on):
         """Turn the celebration on or off, for this panel and the next one.
