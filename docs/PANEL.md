@@ -149,6 +149,27 @@ said it would; because a glyph fades across its own lifetime, a late one fades
 quickly rather than blinking out. The spray stops a third of a second before the
 end, where a new glyph would be a speck appearing and vanishing on the panel.
 
+**How fast they arrive is the session's total, not the turn's.** Nine a second up
+to $10, then eleven, thirteen at $20 and fifteen from $30 on. The turn already has
+its say in the length, and the two answer different questions — how big was that,
+against how deep are we in. The steps are steps rather than a slope because a rate
+creeping up by the cent is a change nobody can see between one turn and the next,
+and they stop at $30 because an unbounded rate would fill the overlay faster than
+the glyphs could leave it.
+
+**The glyphs are sized by the panel.** They are 13–24 px on a panel at its
+shipped size and scale with it from there, so dragging the panel to three times
+the size gets a spray three times the size rather than the same fixed speck
+sitting on top of a much bigger meter. The size is read on every frame, so a drag
+in the middle of a celebration reaches the glyphs still to come; the ones already
+in the air keep the size they were thrown at, since re-sizing them mid-flight
+would be the whole burst twitching at once.
+
+Every glyph *starts* somewhere inside the panel, whatever the scale — it is money
+leaving the table, and one that appeared out in the margin would belong to
+nothing. Leaving is the point, and they are thrown up and pulled down so each one
+is certain to cross an edge.
+
 It is off until you ask for it, and only a genuinely new turn sets it off.
 `refresh()` also runs from the file monitor, the 60-second staleness poll and
 **Refresh now**, and none of those is a charge — a burst driven by anything but

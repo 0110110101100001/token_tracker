@@ -744,6 +744,9 @@ class CostMeter(Gtk.Window):
         # takes. Decided per turn, because both depend on what the turn cost --
         # see `patrik.duration_ms`.
         self._patrik_ms = patrik.BASE_MS
+        # Glyphs per second, taken from the session's total once per celebration
+        # for the reason the length is: see `celebrate`.
+        self._patrik_rate = patrik.RATE
         self._shake_ms = patrik.SHAKE_MS
         # Where the window sits for the duration of a shake, and what it is handed
         # back to. Held rather than read per frame: read live it would drift by
@@ -1149,7 +1152,8 @@ class CostMeter(Gtk.Window):
             # startup from an absent stamp would be the one burst that most
             # deserves to happen.
             if self._opened and self.patrik_enabled():
-                self.celebrate(state.get("last_turn_usd") or 0.0)
+                self.celebrate(state.get("last_turn_usd") or 0.0,
+                               (state.get("session") or {}).get("usd"))
 
         for key in WINDOW_KEYS:
             self.windows[key] = state.get(key) or {}
@@ -1509,7 +1513,7 @@ class CostMeter(Gtk.Window):
         self.overlay.resize(*self.overlay_size())
         self.overlay.move(x - PATRIK_MARGIN, y - PATRIK_MARGIN)
 
-    def celebrate(self, turn_usd):
+    def celebrate(self, turn_usd, session_usd=None):
         """Start a celebration for a turn costing `turn_usd`. A turn has landed.
 
         The caller decides what a turn is; this only obeys. `refresh()` runs from
@@ -1522,18 +1526,30 @@ class CostMeter(Gtk.Window):
         the last one is still in the air restarts the clock on the new length and
         leaves the glyphs already flying alone, which is the same thing
         `Roll.retarget` does for the counting rows.
+
+        How *fast* the glyphs arrive comes from `session_usd` instead — the
+        session's running total, not this turn's cost. The turn already has its
+        say in the length, and the two answer different questions: how big was
+        that, against how deep are we in. Frozen here alongside the length rather
+        than read per frame, because a total cannot meaningfully move inside the
+        couple of seconds a celebration lasts, and a rate that changed mid-spray
+        would be the one place the burst visibly changed its mind.
+
+        The panel's *scale* is deliberately not frozen with it: see
+        `on_patrik_frame`.
         """
         if self.overlay is None:
             self.overlay = self.build_overlay()
         if self.overlay is None:
             return
         self._patrik_ms = patrik.duration_ms(turn_usd)
+        self._patrik_rate = patrik.rate(session_usd)
         self._shake_ms = self._patrik_ms * patrik.SHAKE_SHARE
         # Rebuilt per celebration rather than reused: the wobble's frequency is
         # derived from its duration, so a longer shake needs its own.
         self.shake = patrik.Shake(duration_ms=self._shake_ms)
         self.swarm.burst(patrik.BURST, self.panel_rect(),
-                         max_life=self._patrik_ms / 1000.0)
+                         max_life=self._patrik_ms / 1000.0, scale=self.scale)
         # The base is taken once per celebration rather than per frame: read live
         # it would include the previous frame's offset, and the errors would
         # accumulate into the panel walking across the screen.
@@ -1557,13 +1573,22 @@ class CostMeter(Gtk.Window):
         the time that is left to live, so the celebration keeps arriving instead
         of spraying once and watching the spray fall — and still ends when it said
         it would.
+
+        The scale is read here, per frame, rather than taken once in `celebrate`.
+        Dragging the panel larger is how its size is set and can happen at any
+        moment, celebration or not, and the spray has to follow the panel it is
+        supposed to be coming out of instead of finishing at whatever size the
+        panel was when the turn landed. Glyphs already in the air keep the size
+        they were thrown at: re-sizing them mid-flight would be the whole burst
+        twitching at once.
         """
         now = time.monotonic()
         dt, self._patrik_frame = now - self._patrik_frame, now
         elapsed_ms = (now - self._patrik_began) * 1000.0
         remaining = max(0.0, (self._patrik_ms - elapsed_ms) / 1000.0)
         if remaining > patrik.EMIT_FLOOR:
-            self.swarm.emit(dt, self.panel_rect(), max_life=remaining)
+            self.swarm.emit(dt, self.panel_rect(), rate=self._patrik_rate,
+                            max_life=remaining, scale=self.scale)
         self.swarm.frame(dt)
         self.shake_to(elapsed_ms / self._shake_ms)
         if self.overlay is not None:
