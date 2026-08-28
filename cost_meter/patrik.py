@@ -45,6 +45,19 @@ BURST = 14
 # left three and a half seconds of glyphs merely falling -- the celebration
 # visibly ran out well before it ended.
 RATE = 9.0
+# And how that base steps up with what the session has cost so far: the first
+# threshold whose figure the session has passed, read from the top down.
+#
+# The session rather than the turn, because the turn already has its say -- it
+# sets the length below. Spend is what this panel is for, and a session deep into
+# real money should look different from one that has barely started, not merely
+# run for longer.
+#
+# Steps rather than a slope, and a ceiling rather than an open climb. A rate
+# creeping up by the cent is a change nobody can see between one turn and the
+# next, and an unbounded one would fill the overlay faster than the glyphs could
+# leave it -- the burst reads as money only while a glyph can still be followed.
+RATE_TIERS = ((30.0, 15.0), (20.0, 13.0), (10.0, 11.0))
 
 # How long a celebration lasts: a fixed base plus a share of what the turn cost,
 # so an expensive turn gets the time to be watched instead of being crammed into
@@ -71,9 +84,9 @@ DRIFT = 170.0
 # Seconds a glyph lasts. The floor is above the time it takes to rise and fall
 # back past where it started, so every glyph outlives its own escape.
 LIFE_MIN, LIFE_MAX = 1.4, 2.4
-# Glyph size in pixels at scale 1.0. The widget multiplies by the panel's scale,
-# so the spray grows with the window rather than staying a fixed speck on a
-# panel somebody dragged twice as large.
+# Glyph size in pixels at scale 1.0. `burst` multiplies by the panel's scale, so
+# the spray grows with the window rather than staying a fixed speck on a panel
+# somebody dragged twice as large.
 SIZE_MIN, SIZE_MAX = 13.0, 24.0
 
 # The flinch. Pixels at the widest, and the share of the animation it occupies --
@@ -108,6 +121,25 @@ def duration_ms(turn_usd):
     long are the ones worth a long look.
     """
     return BASE_MS + abs(turn_usd or 0.0) * MS_PER_USD
+
+
+def rate(session_usd):
+    """Glyphs per second for a session that has cost `session_usd` so far.
+
+    A missing figure is the base rate rather than an error, as in `duration_ms`:
+    state.json can carry a null there and the panel must not die of it.
+
+    No absolute value here, which is the one place this parts company with
+    `duration_ms`. A length is a length, so a correction to -$40 still deserves
+    forty dollars' worth of time; but -$40 is a session that has been refunded,
+    not one that has spent, and celebrating it as the loudest tier would be the
+    panel reading the sign backwards.
+    """
+    session_usd = session_usd or 0.0
+    for threshold, tier in RATE_TIERS:
+        if session_usd >= threshold:
+            return tier
+    return RATE
 
 
 class Particle:
@@ -169,7 +201,7 @@ class Swarm:
         # after the opening burst.
         self._pending = 0.0
 
-    def burst(self, count, rect, max_life=None):
+    def burst(self, count, rect, max_life=None, scale=1.0):
         """Throw `count` glyphs out of `rect`, the panel inside the overlay.
 
         They start inside the panel because that is what says they came from the
@@ -182,6 +214,13 @@ class Swarm:
         is the promise. Clamping is safe to do bluntly because the fade is
         measured against the glyph's own life: one given a third of a second
         fades smoothly across that third rather than blinking out.
+
+        `scale` is the panel's, and it multiplies the glyph size and nothing
+        else. Not `rect`, which is already in overlay pixels and comes from the
+        panel at its current size: scaling that too would throw the spawn points
+        clear of the panel, and a glyph appearing out in the margin belongs to
+        nothing. They may leave the panel -- that is the effect -- but every one
+        of them starts inside it.
         """
         x, y, width, height = rect
         for _ in range(count):
@@ -198,21 +237,24 @@ class Swarm:
                 y=y + self._rng.uniform(0.0, height),
                 vx=self._rng.uniform(-DRIFT, DRIFT),
                 vy=-self._rng.uniform(RISE_MIN, RISE_MAX),
-                size=self._rng.uniform(SIZE_MIN, SIZE_MAX),
+                size=self._rng.uniform(SIZE_MIN, SIZE_MAX) * scale,
                 life=life,
             ))
 
-    def emit(self, dt, rect, rate=RATE, max_life=None):
+    def emit(self, dt, rect, rate=RATE, max_life=None, scale=1.0):
         """Spawn `rate` glyphs per second, over a frame of `dt` seconds.
 
         The whole of the celebration is fed through here after the opening burst,
         so glyphs keep arriving for as long as it runs instead of the panel
-        spraying once and then watching the spray fall.
+        spraying once and then watching the spray fall. Most of a celebration
+        arrives this way, which is why `scale` goes through here too: a burst
+        that grew with the panel and a spray behind it that did not would be
+        worse than neither growing.
         """
         self._pending += rate * dt
         count = int(self._pending)
         self._pending -= count
-        self.burst(count, rect, max_life=max_life)
+        self.burst(count, rect, max_life=max_life, scale=scale)
 
     def frame(self, dt):
         """Advance every glyph by `dt` seconds. Returns the survivors.

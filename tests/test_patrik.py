@@ -117,6 +117,54 @@ class BurstTest(unittest.TestCase):
                          [(p.glyph, p.x, p.y) for p in second.particles()])
 
 
+class GlyphScaleTest(unittest.TestCase):
+    """Glyph size follows the panel's scale.
+
+    The panel is drag-resizable, and a spray that stayed a fixed speck on a panel
+    dragged twice as large reads as somebody else's animation playing on top of
+    it rather than as this one coming out of the table. Applied here rather than
+    in the draw handler for the reason the rest of this module exists: a size is
+    arithmetic, and arithmetic can be tested without a display.
+    """
+
+    def test_the_default_is_the_size_it_always_was(self):
+        """An unscaled call is the panel at 1.0, so nothing may move under it."""
+        plain, scaled = swarm(seed=3), swarm(seed=3)
+        plain.burst(20, RECT)
+        scaled.burst(20, RECT, scale=1.0)
+        self.assertEqual([p.size for p in plain.particles()],
+                         [p.size for p in scaled.particles()])
+
+    def test_a_bigger_panel_throws_bigger_glyphs(self):
+        plain, scaled = swarm(seed=3), swarm(seed=3)
+        plain.burst(20, RECT)
+        scaled.burst(20, RECT, scale=2.0)
+        self.assertEqual([p.size * 2.0 for p in plain.particles()],
+                         [p.size for p in scaled.particles()])
+
+    def test_the_scale_reaches_the_emitted_glyphs_too(self):
+        # Most of a celebration arrives through `emit` rather than the opening
+        # burst, so a burst that grew while the spray behind it did not would be
+        # worse than neither growing.
+        plain, scaled = swarm(seed=5), swarm(seed=5)
+        plain.emit(1.0, RECT, rate=10.0)
+        scaled.emit(1.0, RECT, rate=10.0, scale=2.0)
+        self.assertEqual([p.size * 2.0 for p in plain.particles()],
+                         [p.size for p in scaled.particles()])
+
+    def test_the_scale_does_not_move_where_they_start(self):
+        """`rect` is already in overlay pixels; scaling it twice would throw the
+        glyphs out of the panel they are supposed to come from."""
+        sworm = swarm()
+        sworm.burst(30, RECT, scale=2.0)
+        x, y, width, height = RECT
+        for particle in sworm.particles():
+            self.assertGreaterEqual(particle.x, x)
+            self.assertLessEqual(particle.x, x + width)
+            self.assertGreaterEqual(particle.y, y)
+            self.assertLessEqual(particle.y, y + height)
+
+
 class FlightTest(unittest.TestCase):
     def test_a_frame_moves_them(self):
         sworm = swarm()
@@ -256,6 +304,59 @@ class DurationTest(unittest.TestCase):
     def test_a_negative_figure_does_not_run_backwards(self):
         """A correction can push a turn's cost below zero; length is a length."""
         self.assertEqual(patrik.duration_ms(-40.0), patrik.duration_ms(40.0))
+
+
+class RateTest(unittest.TestCase):
+    """How fast glyphs arrive, and why the session's total is what decides it.
+
+    The session rather than the turn, because the turn already has its say: it
+    sets the length. Spend is what the panel is for, and a session deep into real
+    money should look different from one that has barely started, not merely run
+    for longer.
+
+    Steps rather than a slope. A rate that crept up with every cent would be a
+    change nobody could see between one turn and the next; a step is something
+    the panel does at a figure the user can name.
+    """
+
+    def test_a_quiet_session_gets_the_base_rate(self):
+        self.assertEqual(patrik.rate(4.99), patrik.RATE)
+
+    def test_each_threshold_lifts_it(self):
+        self.assertEqual(patrik.rate(10.0), 11.0)
+        self.assertEqual(patrik.rate(20.0), 13.0)
+        self.assertEqual(patrik.rate(30.0), 15.0)
+
+    def test_a_threshold_lands_on_the_figure_itself(self):
+        # The row shows two decimals, so the step has to happen where the panel
+        # says it does: $9.99 is still a quiet session and $10.00 is not.
+        self.assertEqual(patrik.rate(9.99), patrik.RATE)
+        self.assertLess(patrik.rate(9.99), patrik.rate(10.0))
+
+    def test_it_never_falls_as_the_session_grows(self):
+        previous = 0.0
+        for usd in (0.0, 9.99, 10.0, 19.99, 20.0, 29.99, 30.0, 500.0):
+            current = patrik.rate(usd)
+            self.assertGreaterEqual(current, previous, usd)
+            previous = current
+
+    def test_the_top_step_is_the_ceiling(self):
+        # Unbounded was the alternative, and a session in the hundreds would
+        # have filled the overlay faster than the glyphs could leave it.
+        self.assertEqual(patrik.rate(5000.0), patrik.rate(30.0))
+
+    def test_a_missing_figure_is_the_base_rate_rather_than_a_crash(self):
+        """state.json can carry a null there, exactly as `duration_ms` handles."""
+        self.assertEqual(patrik.rate(None), patrik.RATE)
+
+    def test_a_negative_total_is_a_quiet_session_not_a_loud_one(self):
+        # A correction can push a total below zero. Unlike `duration_ms`, this
+        # one must not take the absolute value: -$40 is not a $40 session.
+        self.assertEqual(patrik.rate(-40.0), patrik.RATE)
+
+    def test_the_steps_are_the_ones_the_panel_ships_with(self):
+        self.assertEqual(patrik.RATE_TIERS,
+                         ((30.0, 15.0), (20.0, 13.0), (10.0, 11.0)))
 
 
 class EmitTest(unittest.TestCase):
@@ -426,7 +527,7 @@ class ShakeTest(unittest.TestCase):
 # once already.
 
 
-def a_state(written, turn_usd=0.25):
+def a_state(written, turn_usd=0.25, session_usd=1.0):
     """A state.json whose `updated_at` is what says whether a turn is new.
 
     Written near the present rather than at a round epoch: anything older than
@@ -436,7 +537,7 @@ def a_state(written, turn_usd=0.25):
     """
     return {"updated_at": datetime.fromtimestamp(written).astimezone().isoformat(),
             "last_turn_usd": turn_usd,
-            "session": {"id": "s1", "usd": 1.0},
+            "session": {"id": "s1", "usd": session_usd},
             "today_usd": 1.0,
             "window_5h": {"usd": 2.0},
             "window_7d": {"usd": 3.0},
@@ -472,7 +573,7 @@ class PanelTest(TempHome):
     def config(self):
         return store.read_json(paths.config_path(), default={}) or {}
 
-    def turn(self, turn_usd=0.25):
+    def turn(self, turn_usd=0.25, session_usd=1.0):
         """Land a turn: a state.json with a new `updated_at`, then a repaint.
 
         Each call steps a second further back, because `updated_at` moving is the
@@ -480,8 +581,9 @@ class PanelTest(TempHome):
         would produce the same string.
         """
         self._turns = getattr(self, "_turns", 0) + 1
-        store.write_json_atomic(paths.state_path(),
-                                a_state(time.time() - self._turns, turn_usd))
+        store.write_json_atomic(
+            paths.state_path(),
+            a_state(time.time() - self._turns, turn_usd, session_usd))
         self.window.refresh()
 
     def tick(self, seconds=0.016):
@@ -564,6 +666,112 @@ class ToggleTest(PanelTest):
         self.assertIsNotNone(self.window.overlay)
         self.window.set_patrik(False)
         self.assertIsNone(self.window.overlay)
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class PanelScaleTest(PanelTest):
+    """The spray is the panel's size, not a fixed one.
+
+    The panel is drag-resizable between 0.7 and 3.0, and glyphs that stayed the
+    same 13-24 px on a panel dragged to three times the size read as a fixed
+    speck sitting on top of the meter rather than as money coming out of it.
+    """
+
+    def sizes(self):
+        return [p.size for p in self.window.swarm.particles()]
+
+    def test_a_larger_panel_throws_larger_glyphs(self):
+        # Compared floor against ceiling rather than average against average:
+        # every size is drawn from a range, and only the ranges failing to
+        # overlap says the scale reached them at all.
+        self.window.set_patrik(True)
+        self.window.apply_scale(1.0)
+        self.turn()
+        self.assertTrue(self.drive(), "the burst never finished")
+        small = max(self.sizes() or [patrik.SIZE_MAX])
+
+        self.window.apply_scale(2.0)
+        self.turn()
+        self.assertGreater(min(self.sizes()), small)
+
+    def test_a_resize_mid_celebration_reaches_the_glyphs_still_to_come(self):
+        """The scale is read per frame, not frozen when the turn landed.
+
+        Dragging the panel larger while the glyphs are flying is ordinary --
+        the drag is how the size is set -- and the spray has to follow the panel
+        it is coming out of rather than finish at the old size.
+        """
+        self.window.set_patrik(True)
+        self.window.apply_scale(1.0)
+        self.turn()
+        self.window.apply_scale(3.0)
+        for _ in range(60):
+            self.tick()
+        self.assertGreater(max(self.sizes()), patrik.SIZE_MAX)
+
+    def test_they_start_inside_the_panel_at_every_scale(self):
+        """A glyph may fly out of the panel; none may begin outside it.
+
+        The whole effect is money leaving the table, and one that appeared in
+        the margin already outside would be a glyph belonging to nothing. The
+        size is scaled and the rectangle is not -- `panel_rect` is already in
+        overlay pixels, and scaling it too would throw the spawn points clear of
+        the panel.
+        """
+        self.window.set_patrik(True)
+        for scale in (0.7, 1.0, 3.0):
+            with self.subTest(scale=scale):
+                self.window.apply_scale(scale)
+                self.turn()
+                x, y, width, height = self.window.panel_rect()
+                for particle in self.window.swarm.particles():
+                    self.assertGreaterEqual(particle.x, x)
+                    self.assertLessEqual(particle.x, x + width)
+                    self.assertGreaterEqual(particle.y, y)
+                    self.assertLessEqual(particle.y, y + height)
+                self.assertTrue(self.drive(), "the burst never finished")
+
+
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class SessionRateTest(PanelTest):
+    """A session deep into real money throws them faster.
+
+    Counted over a window shorter than the shortest life, so nothing has died
+    yet and the count is everything thrown rather than everything surviving.
+    """
+
+    def glyphs_after(self, frames=30):
+        for _ in range(frames):
+            self.tick()
+        return len(self.window.swarm.particles())
+
+    def test_a_deep_session_throws_them_faster_than_a_quiet_one(self):
+        self.window.set_patrik(True)
+        self.turn(session_usd=1.0)
+        quiet = self.glyphs_after()
+        self.assertTrue(self.drive(), "the burst never finished")
+
+        self.turn(session_usd=30.0)
+        self.assertGreater(self.glyphs_after(), quiet)
+
+    def test_the_session_decides_it_rather_than_the_turn(self):
+        # The turn already has its say: it sets the length. A big turn early in
+        # a quiet session is still a quiet session.
+        self.window.set_patrik(True)
+        self.turn(turn_usd=9.0, session_usd=1.0)
+        quiet = self.glyphs_after()
+        self.assertTrue(self.drive(), "the burst never finished")
+
+        self.turn(turn_usd=0.01, session_usd=30.0)
+        self.assertGreater(self.glyphs_after(), quiet)
+
+    def test_a_session_with_no_figure_still_celebrates(self):
+        """state.json can carry a null there and the panel must not die of it."""
+        self.window.set_patrik(True)
+        store.write_json_atomic(paths.state_path(),
+                                dict(a_state(time.time() - 1), session=None))
+        self.window.refresh()
+        self.assertTrue(self.window.swarm.running())
 
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")
