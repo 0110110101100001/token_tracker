@@ -212,23 +212,24 @@ beeping every minute all day. The panel's own opening refresh is skipped too,
 because auto-launch opens a panel at every session start and the figure already
 on disk has not just been charged.
 
-The four files live in `sounds/`. Three of them are placeholders: `pixi run
-sounds` regenerates those from `cost_meter/sound.py`, which synthesises plain
-sine tones with the standard library. `under-10.wav` is not one — it is a real
-recording, a 3.5-second slot machine sample, and it is roughly seven times longer
-than the longest tone it sits beside.
+The four files live in `sounds/`. Two of them are placeholders: `pixi run sounds`
+regenerates those from `cost_meter/sound.py`, which synthesises plain sine tones
+with the standard library. `under-10.wav` and `over-10.wav` are not — they are
+real recordings, a slot machine and a cash register, and both are a good deal
+longer than the tones they sit beside.
 
-That is a trial rather than a settled design, and it is worth knowing which way
-it cuts. It puts the *longest* sound on the *cheapest* session, which is the
-reverse of the rising series the other three still follow, and at 3.5 seconds it
-is no longer over before the next turn can land: turns that come quickly will
-talk over each other, and on Windows each new one cuts the previous off where it
-stands, because `winsound` with `SND_ASYNC` replaces rather than mixes.
+They are a trial rather than a settled design, and it is worth knowing which way
+they cut. The lengths no longer climb with the tiers: 3.5s under $10, 1.5s from
+$10, then 0.36s and 0.48s for the two dearest sessions. The rising series that
+let the four be told apart by ear now runs backwards at the bottom, and the two
+cheapest tiers are the loudest thing the panel does. And at 3.5 seconds
+`under-10.wav` is no longer over before the next turn can land: turns that come
+quickly talk over each other, and on Windows each new one cuts the previous off
+where it stands, because `winsound` with `SND_ASYNC` replaces rather than mixes.
 
-**`pixi run sounds` rewrites all four**, `under-10.wav` included. It does not
+**`pixi run sounds` rewrites all four**, both recordings included. It does not
 check whether a file is a placeholder before overwriting it, so it will silently
-put the sine tone back over the recording. Keep a copy outside `sounds/` before
-running it.
+put sine tones back over them. Keep copies outside `sounds/` before running it.
 
 To use your own, drop four WAVs of the same names over them — `under-10.wav`,
 `over-10.wav`, `over-20.wav`, `over-30.wav`. WAV is not an
@@ -249,11 +250,20 @@ decoration must never take the meter down.
 Faved — Sound Effects & Stock Footage, released under [CC BY
 4.0](https://creativecommons.org/licenses/by/4.0/) and used under it.
 
-The credit is a condition of that licence rather than a courtesy: shipping the
-file without naming the author is the one way this feature can be out of
-compliance. Anyone replacing the file should replace this paragraph with it, and
-anyone who regenerates it with `pixi run sounds` can drop both — a synthesised
-sine tone is the project's own.
+`over-10.wav` is *Cash Register Purchase* by Zott820, uploaded to Freesound and
+distributed through Pixabay's `freesound_community` account under the [Pixabay
+Content License](https://pixabay.com/service/license-summary/). Leading and
+trailing silence trimmed, nothing else altered.
+
+The two are not on the same footing, and the difference matters whenever these
+files are replaced. Crediting Played N Faved is a *condition* of CC BY: ship
+`under-10.wav` without naming them and the feature is out of compliance. The
+Pixabay licence asks for no attribution, so the second credit is a courtesy and
+a record of where the file came from — worth keeping for whoever wonders later,
+but not an obligation.
+
+Anyone who regenerates a file with `pixi run sounds` can drop its credit along
+with it: a synthesised sine tone is the project's own.
 
 ## Moving and resizing it
 
