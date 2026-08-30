@@ -212,10 +212,27 @@ beeping every minute all day. The panel's own opening refresh is skipped too,
 because auto-launch opens a panel at every session start and the figure already
 on disk has not just been charged.
 
-The four files live in `sounds/`, and they are placeholders: `pixi run sounds`
-regenerates them from `cost_meter/sound.py`, which synthesises plain sine tones
-with the standard library. To use your own, drop four WAVs of the same names over
-them — `under-10.wav`, `over-10.wav`, `over-20.wav`, `over-30.wav`. WAV is not an
+The four files live in `sounds/`. Two of them are placeholders: `pixi run sounds`
+regenerates those from `cost_meter/sound.py`, which synthesises plain sine tones
+with the standard library. `under-10.wav` and `over-10.wav` are not — they are
+real recordings, a slot machine and a cash register, and both are a good deal
+longer than the tones they sit beside.
+
+They are a trial rather than a settled design, and it is worth knowing which way
+they cut. The lengths no longer climb with the tiers: 3.5s under $10, 1.5s from
+$10, then 0.36s and 0.48s for the two dearest sessions. The rising series that
+let the four be told apart by ear now runs backwards at the bottom, and the two
+cheapest tiers are the loudest thing the panel does. And at 3.5 seconds
+`under-10.wav` is no longer over before the next turn can land: turns that come
+quickly talk over each other, and on Windows each new one cuts the previous off
+where it stands, because `winsound` with `SND_ASYNC` replaces rather than mixes.
+
+**`pixi run sounds` rewrites all four**, both recordings included. It does not
+check whether a file is a placeholder before overwriting it, so it will silently
+put sine tones back over them. Keep copies outside `sounds/` before running it.
+
+To use your own, drop four WAVs of the same names over them — `under-10.wav`,
+`over-10.wav`, `over-20.wav`, `over-30.wav`. WAV is not an
 oversight: on Windows the player is `winsound` from the standard library, which
 plays nothing else, and the alternative was a GStreamer stack whose every DLL is
 another file for Smart App Control to have no opinion about.
@@ -226,6 +243,27 @@ line in `data/cost-meter.log` — never a stalled panel. The sound is spawned
 rather than waited on, so a slow sound server cannot freeze the figures, and it
 is the same rule the overlay follows where a screen cannot composite: a
 decoration must never take the meter down.
+
+### Credits
+
+`under-10.wav` is cut from *Slot Machine Sound Effects (Sample Pack)* by Played N
+Faved — Sound Effects & Stock Footage, released under [CC BY
+4.0](https://creativecommons.org/licenses/by/4.0/) and used under it.
+
+`over-10.wav` is *Cash Register Purchase* by Zott820, uploaded to Freesound and
+distributed through Pixabay's `freesound_community` account under the [Pixabay
+Content License](https://pixabay.com/service/license-summary/). Leading and
+trailing silence trimmed, nothing else altered.
+
+The two are not on the same footing, and the difference matters whenever these
+files are replaced. Crediting Played N Faved is a *condition* of CC BY: ship
+`under-10.wav` without naming them and the feature is out of compliance. The
+Pixabay licence asks for no attribution, so the second credit is a courtesy and
+a record of where the file came from — worth keeping for whoever wonders later,
+but not an obligation.
+
+Anyone who regenerates a file with `pixi run sounds` can drop its credit along
+with it: a synthesised sine tone is the project's own.
 
 ## Moving and resizing it
 

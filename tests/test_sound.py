@@ -107,12 +107,25 @@ class FileTest(unittest.TestCase):
                     frames = handle.readframes(handle.getnframes())
                 self.assertTrue(any(frames), name)
 
-    def test_they_are_short_enough_to_be_over_before_the_next_turn(self):
+    def test_none_of_them_runs_long_enough_to_pile_up_all_day(self):
+        """A ceiling on the files, and a deliberately loose one.
+
+        The bound was 1.5s, and the promise behind it was that every sound is
+        over before the next turn can land. `under-10.wav` is now a 3.5-second
+        recording rather than a tone, so for that file the promise is suspended
+        on purpose -- see the Sound section of docs/PANEL.md.
+
+        What is left is still worth asserting: a stray file nobody meant to ship
+        -- a whole track dropped in by mistake -- would have the panel playing
+        over itself for the rest of the session, and on Windows each turn would
+        cut the previous sound off mid-note. Put the bound back under a turn's
+        length if the long clip does not survive daily use.
+        """
         for name in self.every_file():
             with self.subTest(name=name):
                 with wave.open(str(paths.sound_path(name))) as handle:
                     seconds = handle.getnframes() / handle.getframerate()
-                self.assertLess(seconds, 1.5, name)
+                self.assertLess(seconds, 4.0, name)
 
 
 class PlayerTest(unittest.TestCase):
@@ -260,14 +273,14 @@ class SoundMenuTest(PanelTest):
     def test_it_sits_directly_under_patrik_mode(self):
         captions = self.captions()
         index = next(i for i, caption in enumerate(captions)
-                     if caption.startswith("Patrik mode"))
-        self.assertEqual(captions[index + 1], "Sound")
+                     if caption.startswith("Set Patrik mode"))
+        self.assertEqual(captions[index + 1], "Set sound on")
 
     def test_the_caption_says_what_the_click_will_do(self):
         self.window.set_sound(True)
-        self.assertIn("Sound off", self.captions())
+        self.assertIn("Set sound off", self.captions())
         self.window.set_sound(False)
-        self.assertIn("Sound", self.captions())
+        self.assertIn("Set sound on", self.captions())
 
     def test_every_entry_still_has_a_handler(self):
         for caption, handler in self.window.menu_entries():
