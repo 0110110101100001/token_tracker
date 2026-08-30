@@ -32,9 +32,9 @@ if HAS_DISPLAY:
 
 
 class TierTest(unittest.TestCase):
-    """The session's running total picks the file, in four steps."""
+    """What the turn cost picks the file, in four steps."""
 
-    def test_a_quiet_session_gets_the_first_sound(self):
+    def test_a_cheap_turn_gets_the_first_sound(self):
         self.assertEqual(sound.file_for(4.99), "under-10.wav")
 
     def test_each_threshold_moves_to_the_next_one(self):
@@ -54,8 +54,8 @@ class TierTest(unittest.TestCase):
         """state.json can carry a null there, as everywhere else."""
         self.assertEqual(sound.file_for(None), "under-10.wav")
 
-    def test_a_negative_total_is_a_quiet_session(self):
-        # A refunded session is not a loud one. Same reading as `patrik.rate`,
+    def test_a_negative_figure_is_a_quiet_turn(self):
+        # A refunded turn is not an expensive one. Same reading as `patrik.rate`,
         # and deliberately unlike `duration_ms`, where a length is a length.
         self.assertEqual(sound.file_for(-40.0), "under-10.wav")
 
@@ -63,16 +63,21 @@ class TierTest(unittest.TestCase):
         chosen = {sound.file_for(usd) for usd in (0.0, 10.0, 20.0, 30.0)}
         self.assertEqual(len(chosen), 4)
 
-    def test_it_steps_where_the_glyph_rate_steps(self):
-        """One set of figures, two decorations.
+    def test_it_is_read_against_the_turn_and_the_glyph_rate_against_the_session(self):
+        """The two sets of steps are no longer one idea, and must not be tied.
 
-        The steps were asked for as one idea -- what a session has cost so far --
-        and a panel that sped its glyphs up at $20 while the sound waited until
-        $25 would be two half-features. Asserted rather than shared through a
-        module of three numbers, so the coupling is visible where it can break.
+        They still carry the same three figures, and an assertion that they match
+        used to guard that. It is gone rather than updated: the sound now steps on
+        one turn and the glyph rate on the session's running total, so the numbers
+        agreeing is a coincidence and holding them equal would turn any later
+        rescale of the sound into a failure claiming the glyphs had regressed.
+
+        What replaces it is the distinction itself, on the functions rather than
+        on the constants -- the same $12 is a loud turn and a slow-glyph session,
+        and nothing about that follows from three numbers being equal.
         """
-        self.assertEqual([threshold for threshold, _ in sound.TIERS],
-                         [threshold for threshold, _ in patrik.RATE_TIERS])
+        self.assertEqual(sound.file_for(12.0), "over-10.wav")
+        self.assertEqual(patrik.rate(12.0), patrik.rate(10.0))
 
 
 class FileTest(unittest.TestCase):
@@ -330,15 +335,32 @@ class SoundOnTurnTest(PanelTest):
         self.turn()
         self.played.assert_not_called()
 
-    def test_the_session_total_picks_the_file(self):
+    def test_the_turns_own_cost_picks_the_file(self):
+        # The session is held at a dollar throughout, so nothing here can pass
+        # by reading the wrong figure and getting lucky.
         self.window.set_sound(True)
-        for session_usd, expected in ((1.0, "under-10.wav"),
-                                      (10.0, "over-10.wav"),
-                                      (20.0, "over-20.wav"),
-                                      (30.0, "over-30.wav")):
-            with self.subTest(session_usd=session_usd):
-                self.turn(session_usd=session_usd)
+        for turn_usd, expected in ((1.0, "under-10.wav"),
+                                   (10.0, "over-10.wav"),
+                                   (20.0, "over-20.wav"),
+                                   (30.0, "over-30.wav")):
+            with self.subTest(turn_usd=turn_usd):
+                self.turn(turn_usd=turn_usd, session_usd=1.0)
                 self.assertEqual(self.played_file(), expected)
+
+    def test_a_dear_session_does_not_make_a_cheap_turn_loud(self):
+        """The half of the change that is easy to get wrong and never notice.
+
+        Every turn of a long session costs the same as it would have on the
+        first, so a $500 afternoon must not turn a two-cent turn into the
+        loudest sound the panel owns. Held from both sides, because a `play_for`
+        still wired to the session would sound perfectly reasonable all day --
+        it only ever gets louder -- and would be caught by nothing else here.
+        """
+        self.window.set_sound(True)
+        self.turn(turn_usd=0.25, session_usd=500.0)
+        self.assertEqual(self.played_file(), "under-10.wav")
+        self.turn(turn_usd=30.0, session_usd=0.5)
+        self.assertEqual(self.played_file(), "over-30.wav")
 
     def test_a_repaint_that_is_not_a_turn_plays_nothing(self):
         """refresh() runs four ways and only one of them is a charge.

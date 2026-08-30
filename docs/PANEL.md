@@ -194,12 +194,25 @@ box.
 
 ## Sound
 
-Right click the panel and pick **Sound**. From the next turn on, each one plays a
-short sound, and *which* sound is what the session has cost so far: one tone
-under $10, two from $10, three from $20 and four from $30 — the same figures the
-glyph rate steps at, because they are the same idea said twice. It stays on until
-you pick **Sound off**, and it survives a restart, in `data/config.json` under
-`sound`.
+Right click the panel and pick **Set sound on**. From the next turn on, each one
+plays a short sound, and *which* sound is what that turn cost — the figure on the
+top row, not the session's running total: one tone under $10, two from $10, three
+from $20 and four from $30. It stays on until you pick **Set sound off**, and it
+survives a restart, in `data/config.json` under `sound`.
+
+The turn rather than the session, because the sound answers "what did that one
+cost" and the person who just pressed enter is waiting on exactly that figure. A
+session total only climbs, so keyed to it the sound would ratchet up once and then
+say the same thing about every turn until midnight, a two-cent one included. How
+deep the day is already in has its own channel: the glyph rate, which does read
+the session, and still steps on these same three figures. The numbers agreeing is
+now a coincidence rather than a coupling, and nothing asserts it — rescaling one
+is a change to that one alone.
+
+Worth knowing before you turn it on: on real traffic the top two files are rare.
+Turns here run around $0.50–$1.70 median depending on where you draw the boundary,
+and fewer than one turn in a hundred reaches $10. Under $10 is the everyday sound
+and $30 is close to a jackpot.
 
 It is its own switch rather than part of Patrik mode, and that is the point:
 glyphs play on your own screen and a sound plays in whatever room you are sitting
@@ -220,7 +233,7 @@ longer than the tones they sit beside.
 
 They are a trial rather than a settled design, and it is worth knowing which way
 they cut. The lengths no longer climb with the tiers: 3.5s under $10, 1.5s from
-$10, then 0.36s and 0.48s for the two dearest sessions. The rising series that
+$10, then 0.36s and 0.48s for the two dearest turns. The rising series that
 let the four be told apart by ear now runs backwards at the bottom, and the two
 cheapest tiers are the loudest thing the panel does. And at 3.5 seconds
 `under-10.wav` is no longer over before the next turn can land: turns that come

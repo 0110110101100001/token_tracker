@@ -1184,8 +1184,8 @@ class CostMeter(Gtk.Window):
         turn_rolling = False
         if stamp != self._turn_stamp:
             self._turn_stamp = stamp
-            turn_rolling = self.roll.replay(
-                TURN_KEY, state.get("last_turn_usd") or 0.0)
+            turn_usd = state.get("last_turn_usd") or 0.0
+            turn_rolling = self.roll.replay(TURN_KEY, turn_usd)
             # Patrik mode rides on the same test, and skips the panel's own
             # opening refresh for the reason `Roll.replay` sets the row outright
             # there: the figure on disk at startup has not just been charged, and
@@ -1198,13 +1198,21 @@ class CostMeter(Gtk.Window):
             # deserves to happen.
             session_usd = (state.get("session") or {}).get("usd")
             if self._opened and self.patrik_enabled():
-                self.celebrate(state.get("last_turn_usd") or 0.0, session_usd)
+                self.celebrate(turn_usd, session_usd)
             # Independently of the glyphs, and gated on `_opened` for the same
             # reason: auto-launch opens a panel at every session start, and the
             # figure already on disk has not just been charged. A noise on that
             # would be the panel greeting a session it did not witness.
+            #
+            # The turn's own cost, not the session's: the sound answers "what did
+            # that one cost", which is the figure on the top row and the only one
+            # the person who just pressed enter is waiting on. Keyed to the
+            # session it could only ever climb, so an afternoon that had already
+            # run up $500 would play the loudest file for a two-cent turn and go
+            # on playing it until midnight -- and the glyph rate, which does read
+            # the session, is already the channel that says how deep we are in.
             if self._opened and self.sound_enabled():
-                sound.play_for(session_usd)
+                sound.play_for(turn_usd)
 
         for key in WINDOW_KEYS:
             self.windows[key] = state.get(key) or {}

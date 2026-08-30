@@ -33,13 +33,17 @@ import wave
 
 from . import log, paths
 
-# The base, for a session that has not yet reached the first step.
+# The base, for a turn that has not reached the first step.
 BASE_FILE = "under-10.wav"
-# And the steps, read from the top down: the first threshold the session has
-# passed wins. The same figures as `patrik.RATE_TIERS`, and deliberately so --
-# the steps were asked for as one idea, what the session has cost so far, and a
-# panel whose glyphs sped up at $20 while the sound waited for $25 would be two
-# half-features. tests/test_sound.py asserts the two agree.
+# And the steps, read from the top down: the first threshold the turn has passed
+# wins.
+#
+# The same three figures as `patrik.RATE_TIERS`, but no longer the same idea, and
+# nothing asserts they agree any more. The rate tiers are read against the
+# session's running total and these against one turn, so the two now answer
+# different questions and only happen to step on the same numbers. Rescaling
+# either of them is a change to that one alone; a test tying them together would
+# have made a sound rescale look like a glyph regression.
 TIERS = ((30.0, "over-30.wav"), (20.0, "over-20.wav"), (10.0, "over-10.wav"))
 
 # What to play with on anything that is not Windows, in the order to try. paplay
@@ -66,20 +70,26 @@ NOTES = (
 )
 
 
-def file_for(session_usd):
-    """The file a session that has cost `session_usd` so far has earned.
+def file_for(turn_usd):
+    """The file a turn costing `turn_usd` has earned.
+
+    The turn, not the session: this is the figure on the panel's top row, and
+    the one the person who just pressed enter is waiting on. A session total can
+    only climb, so keyed to it the sound would ratchet up once and stay there for
+    the rest of the day, saying the same thing about every turn from a two-cent
+    one to a twenty-dollar one. `patrik.rate` is the channel that reads the
+    session, and it still does.
 
     A missing figure is the quiet sound rather than an error: state.json can
     carry a null there and the panel must not die of it.
 
     No absolute value, unlike `patrik.duration_ms` and exactly like
-    `patrik.rate`: a correction to -$40 is a session that has been refunded, not
-    one that has spent, and the loudest sound would be the panel reading the
-    sign backwards.
+    `patrik.rate`: a correction to -$40 is a turn that refunded, not one that
+    spent, and the loudest sound would be the panel reading the sign backwards.
     """
-    session_usd = session_usd or 0.0
+    turn_usd = turn_usd or 0.0
     for threshold, name in TIERS:
-        if session_usd >= threshold:
+        if turn_usd >= threshold:
             return name
     return BASE_FILE
 
@@ -138,9 +148,9 @@ def play(path):
         log.write(f"sound: {type(error).__name__}: {error}")
 
 
-def play_for(session_usd):
-    """Play whatever the session's total has earned. The panel's one entry."""
-    play(paths.sound_path(file_for(session_usd)))
+def play_for(turn_usd):
+    """Play whatever the turn that just landed has earned. The panel's one entry."""
+    play(paths.sound_path(file_for(turn_usd)))
 
 
 def _tone(frequencies):
