@@ -364,6 +364,62 @@ class RollStyleTest(unittest.TestCase):
         self.assertEqual(rolling.frame(0.5)["today"], roll.value_at(10.0, 48.0, 0.5))
 
 
+@unittest.skipUnless(HAS_DISPLAY, "no display")
+class MenuColourTest(unittest.TestCase):
+    """Every caption in the right-click menu is black, whatever its state.
+
+    The panel's stylesheet is added for the whole screen rather than for the
+    panel, and the menu is a top-level of its own, so `label { color: #d8d8dc }`
+    -- a pale grey picked to sit on the panel's near-black -- landed on the
+    menu's light background too. Every item there is live, and grey text on
+    white is how a menu says the opposite.
+
+    Read off real widgets rather than out of `widget.CSS`, unlike the other
+    stylesheet tests here: those guard rules that must not exist, which text can
+    settle, and this guards an outcome. A rule that reads correctly can still
+    lose the cascade to a theme, and the grep would stay green while the menu
+    went back to grey.
+    """
+
+    def setUp(self):
+        self.window = widget.CostMeter()  # puts the stylesheet on the screen
+        # No main loop here, so the close handler would turn teardown into a
+        # Gtk-CRITICAL.
+        self.window.disconnect_by_func(Gtk.main_quit)
+        self.addCleanup(self.window.destroy)
+        self.menu = self.window.build_menu()
+        self.menu.show_all()
+        self.addCleanup(self.menu.destroy)
+
+    def test_no_caption_is_grey_in_any_state(self):
+        # PRELIGHT and INSENSITIVE as well as NORMAL: "always" is the whole
+        # request, and the hover state is where a theme gets its say.
+        states = (Gtk.StateFlags.NORMAL, Gtk.StateFlags.PRELIGHT,
+                  Gtk.StateFlags.INSENSITIVE)
+        items = self.menu.get_children()
+        self.assertEqual(len(items), len(self.window.menu_entries()))
+        for item in items:
+            label = item.get_child()
+            context = label.get_style_context()
+            for state in states:
+                colour = context.get_color(state)
+                self.assertEqual(
+                    (colour.red, colour.green, colour.blue), (0.0, 0.0, 0.0),
+                    f"{label.get_text()!r} is not black in {state}")
+
+    def test_the_panel_itself_keeps_its_pale_text(self):
+        """The other direction of the same fix.
+
+        Black belongs to the menu alone. Reaching the panel with it would put
+        near-black text on the panel's near-black background and lose the rows
+        entirely -- a far louder failure than the one being fixed.
+        """
+        colour = self.window.today.get_style_context().get_color(
+            Gtk.StateFlags.NORMAL)
+        self.assertNotEqual((colour.red, colour.green, colour.blue),
+                            (0.0, 0.0, 0.0))
+
+
 class ScaleSizeTest(unittest.TestCase):
     """One number sizes the whole panel.
 

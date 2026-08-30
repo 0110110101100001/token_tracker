@@ -148,6 +148,15 @@ COLUMN_SPACING = 12
 # therefore set the startup size, silently ignore every resize after it, and
 # look for all the world like it was working. Pango attributes, applied per
 # label in `apply_scale`, do rebuild the layout.
+#
+# The right-click menu is named here too, and it has to be. This provider is
+# added for the whole screen, not for the panel, and the menu is a toplevel of
+# its own: `label { color: #d8d8dc }` -- a pale grey picked to sit on the
+# panel's near-black -- was landing on the menu's light background, where grey
+# text reads as an item greyed out to say "unavailable". Every caption in it is
+# live, so every caption is black, in every state; the hover shade is set with
+# it because a theme is otherwise free to paint the highlight dark and put
+# black text on top of it.
 CSS = b"""
 window { background-color: #1e1e22; }
 label { color: #d8d8dc; font-family: monospace; }
@@ -157,6 +166,9 @@ label.green { color: #78d178; }
 label.amber { color: #e3b341; }
 label.red { color: #f06a5a; }
 label.warn { color: #f06a5a; }
+menu { background-color: #ffffff; }
+menu label { color: #000000; }
+menu menuitem:hover { background-color: #d5d5da; }
 """
 
 
@@ -1414,12 +1426,24 @@ class CostMeter(Gtk.Window):
             ("Quit", lambda *_: Gtk.main_quit()),
         )
 
-    def show_menu(self, event):
+    def build_menu(self):
+        """The menu as a widget, assembled but not yet on screen.
+
+        Split out of `show_menu` for the reason `menu_entries` is split out of
+        this one: how the menu *looks* is as much a thing to hold as what it
+        says, and the colour a caption ends up is a cascade that can only be
+        read off a real widget -- see MenuColourTest. Neither needs a pointer
+        event to get at.
+        """
         menu = Gtk.Menu()
         for caption, handler in self.menu_entries():
             item = Gtk.MenuItem(label=caption)
             item.connect("activate", handler)
             menu.append(item)
+        return menu
+
+    def show_menu(self, event):
+        menu = self.build_menu()
         menu.show_all()
         menu.popup_at_pointer(event)
         self.menu = menu  # keep a reference so it is not collected mid-display
