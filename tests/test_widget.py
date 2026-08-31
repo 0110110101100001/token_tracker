@@ -1097,16 +1097,26 @@ class LimitPollTest(TempHome):
         # Read at construction, so it has to be patched before the window exists.
         self.enterContext(unittest.mock.patch.object(
             widget, "STALE_POLL_SECONDS", 1))
-        window = self.build()
-        self.assertEqual(window.window_5h.get_text(), "≈1 %")
-
-        # Dropped rather than never created: a monitor stops delivering once it
-        # is cancelled, which leaves the timer as the only way back to refresh().
+        # Never created rather than cancelled, and that is not a preference.
+        # `g_file_monitor_cancel` on the Windows GTK stack leaves the monitor in
+        # a state its finaliser cannot survive: the process carries a corrupt
+        # heap from here on and dies with STATUS_HEAP_CORRUPTION at whatever
+        # unrelated point the cyclic collector next runs -- several test classes
+        # later, or after the suite has already printed OK. A monitor that was
+        # never built cannot deliver either, which is all this test needs, and
+        # the panel itself never cancels one, so nothing shipped is being
+        # side-stepped here.
+        #
+        # With the monitors out, the timer is the only way back to refresh().
         # This stands in for the case the poll is really there for -- a window
         # reaching its `resets_at`, where no file changes at all -- because that
         # one cannot be staged inside a five-second cap.
-        for monitor in window.monitors:
-            monitor.cancel()
+        self.enterContext(unittest.mock.patch.object(
+            widget.CostMeter, "watch",
+            lambda window: setattr(window, "monitors", [])))
+        window = self.build()
+        self.assertEqual(window.window_5h.get_text(), "≈1 %")
+        self.assertEqual(window.monitors, [])
 
         state_mtime = paths.state_path().stat().st_mtime
         self.write_cache(5)
