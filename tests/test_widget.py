@@ -343,6 +343,60 @@ class ScopedCaptionTest(unittest.TestCase):
         self.assertEqual(widget.scoped_caption(None), "scoped")
 
 
+class ScopedResetTest(unittest.TestCase):
+    """Where the scoped row's reset time comes from when the server sends none.
+
+    Measured on this account: `weekly_scoped` arrives with a `resets_at` when it
+    has a percentage to report and with `null` when it is at nought, while
+    `weekly_all` carries one either way -- and in the sample where both were
+    present the two agreed to the second, differing only in microseconds. They
+    are the same weekly cycle, so the week's time is the scoped row's time.
+
+    Borrowed rather than assumed: the row says so in its tooltip, because a time
+    the server did not put on this entry is an inference and the panel does not
+    present inferences as figures.
+    """
+
+    def setUp(self):
+        self.iso = datetime(2026, 9, 5, 3, 0, 0).astimezone().isoformat()
+        self.other = datetime(2026, 9, 7, 3, 0, 0).astimezone().isoformat()
+
+    def test_a_scoped_figure_with_no_reset_takes_the_weeks(self):
+        filled = widget.scoped_limit({"pct": 0, "resets_at": None},
+                                     {"pct": 17, "resets_at": self.iso})
+        self.assertEqual(filled["resets_at"], self.iso)
+        self.assertTrue(filled["resets_from_week"])
+
+    def test_its_own_reset_is_left_alone(self):
+        filled = widget.scoped_limit({"pct": 15, "resets_at": self.other},
+                                     {"pct": 17, "resets_at": self.iso})
+        self.assertEqual(filled["resets_at"], self.other)
+        self.assertFalse(filled["resets_from_week"])
+
+    def test_nothing_is_borrowed_when_the_week_has_no_reset_either(self):
+        filled = widget.scoped_limit({"pct": 0, "resets_at": None},
+                                     {"pct": 17, "resets_at": None})
+        self.assertIsNone(filled["resets_at"])
+        self.assertFalse(filled["resets_from_week"])
+
+    def test_a_missing_week_row_borrows_nothing(self):
+        filled = widget.scoped_limit({"pct": 0, "resets_at": None}, None)
+        self.assertIsNone(filled["resets_at"])
+
+    def test_no_scoped_figure_stays_no_figure(self):
+        # Borrowing a time onto nothing would put a reset beside a dash.
+        self.assertIsNone(widget.scoped_limit(None,
+                                              {"pct": 17, "resets_at": self.iso}))
+
+    def test_the_original_figure_is_not_written_into(self):
+        # The rows dict is read again on the next repaint; filling it in place
+        # would make the borrowed time indistinguishable from a sent one.
+        scoped = {"pct": 0, "resets_at": None}
+        widget.scoped_limit(scoped, {"pct": 17, "resets_at": self.iso})
+        self.assertIsNone(scoped["resets_at"])
+        self.assertNotIn("resets_from_week", scoped)
+
+
 class SeverityTest(unittest.TestCase):
     """Colour comes from the server, which knows where the thresholds are."""
 
@@ -436,6 +490,23 @@ class ScopedTooltipTest(unittest.TestCase):
         text = widget.scoped_tooltip({"pct": 15}, 1800.0, now=self.now)
         self.assertIn("30 min", text)
         self.assertIn("/usage", text)
+
+    def test_a_borrowed_reset_is_named_as_the_weeks(self):
+        # The distinction the tooltip exists to carry: this time came off the
+        # weekly row, not off the scoped entry, and the reader can see that.
+        text = widget.scoped_tooltip(
+            {"pct": 0, "resets_at": self.iso, "resets_from_week": True},
+            1800.0, now=self.now)
+        self.assertIn("resets with the week, 18:30", text)
+        self.assertNotIn("at least 0 %, resets", text)
+        self.assertIn("at least 0 %", text)
+
+    def test_its_own_reset_still_rides_with_the_figure(self):
+        text = widget.scoped_tooltip(
+            {"pct": 15, "resets_at": self.iso, "resets_from_week": False},
+            1800.0, now=self.now)
+        self.assertIn("at least 15 %, resets 18:30", text)
+        self.assertNotIn("with the week", text)
 
     def test_it_says_so_when_there_is_no_scoped_figure(self):
         text = widget.scoped_tooltip(None, None)
@@ -1040,6 +1111,41 @@ class LimitRowsOnThePanelTest(TempHome):
         self.assertEqual(self.window.scoped_name.get_text(), "scoped")
         self.assertTrue(self.window.scoped_value.get_style_context()
                         .has_class("muted"))
+
+    def week_resetting(self, iso):
+        """The two unscoped figures, with a reset time on the weekly one."""
+        return [{"kind": "session", "percent": 12, "severity": "normal",
+                 "resets_at": None, "scope": None, "is_active": True},
+                {"kind": "weekly_all", "percent": 17, "severity": "normal",
+                 "resets_at": iso, "scope": None, "is_active": True}]
+
+    def test_a_scoped_figure_with_no_reset_shows_the_weeks(self):
+        # What the server actually sends at nought: a scoped entry with no
+        # resets_at beside a weekly one that has one. The row said nothing about
+        # when it turns over, while the panel had the answer a row below.
+        iso = datetime(2026, 9, 5, 3, 0, 0).astimezone().isoformat()
+        self.draw(self.week_resetting(iso) + [self.scoped(pct=0)])
+        # Read off the week's own row rather than spelt out: the reset renders
+        # as a local weekday and this suite must not depend on the machine's
+        # locale. What is being asserted is that the two say the same time.
+        tail = self.window.window_7d.get_text().split(" · ", 1)[1]
+        self.assertEqual(self.window.scoped_value.get_text(),
+                         "≈0 % · " + tail)
+
+    def test_a_borrowed_reset_is_named_as_such_in_the_tooltip(self):
+        iso = datetime(2026, 9, 5, 3, 0, 0).astimezone().isoformat()
+        self.draw(self.week_resetting(iso) + [self.scoped(pct=0)])
+        self.assertIn("resets with the week",
+                      self.window.scoped_value.get_tooltip_text())
+
+    def test_the_scoped_rows_own_reset_is_not_overwritten(self):
+        own = datetime(2026, 9, 7, 3, 0, 0).astimezone().isoformat()
+        week = datetime(2026, 9, 5, 3, 0, 0).astimezone().isoformat()
+        self.draw(self.week_resetting(week) + [self.scoped(pct=15, resets_at=own)])
+        self.assertNotEqual(self.window.scoped_value.get_text(),
+                            self.window.window_7d.get_text())
+        self.assertNotIn("with the week",
+                         self.window.scoped_value.get_tooltip_text())
 
     def test_the_scoped_tooltip_puts_up_no_dollars(self):
         self.draw(self.figures() + [self.scoped(pct=15)])

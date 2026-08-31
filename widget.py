@@ -409,6 +409,36 @@ def window_expired(limit, now):
     return end is not None and now >= end
 
 
+def scoped_limit(scoped, weekly):
+    """The scoped figure with a reset time on it, borrowed from the week if need be.
+
+    The server sends `weekly_scoped` without a `resets_at` when the cap is at
+    nought, and with one when it is not; `weekly_all` carries one either way.
+    Both describe the same weekly cycle -- in the sample where both were present
+    they agreed to the second, differing only in microseconds -- so the week's
+    time is the scoped row's time, and a row that said nothing about when it
+    turns over would be withholding a fact the panel has.
+
+    Borrowed, not adopted. The copy carries `resets_from_week`, and the tooltip
+    words it differently for it: a time the server did not put on this entry is
+    an inference, and this panel does not print inferences as figures. It is a
+    copy for the same reason -- the rows dict is read again on every repaint,
+    and filling it in place would lose the distinction after one pass.
+
+    None in stays None out. A reset beside a dash would claim a window for a
+    figure that does not exist.
+    """
+    if not scoped:
+        return None
+    filled = dict(scoped)
+    borrowed = (filled.get("resets_at") is None
+                and (weekly or {}).get("resets_at") is not None)
+    if borrowed:
+        filled["resets_at"] = weekly["resets_at"]
+    filled["resets_from_week"] = borrowed
+    return filled
+
+
 def scoped_caption(limit):
     """The caption for the scoped row: the model the cap is on, or `scoped`.
 
@@ -492,9 +522,24 @@ def scoped_tooltip(limit, age_s, now=None):
     two-scopes-on-one-claim mistake window_row exists to avoid. So the line is
     absent rather than approximated, and what is left is the account's own
     figure and how old it is.
+
+    A reset time borrowed from the week gets a line of its own rather than
+    riding on the figure. On every other row `, resets 18:30` is part of the
+    claim the percentage makes, and this one did not come with the percentage --
+    scoped_limit inferred it. Saying which is which is the whole reason the row
+    is allowed to show it at all.
     """
     now = time.time() if now is None else now
-    return "\n".join(_limit_lines(limit, age_s, now))
+    borrowed = (limit or {}).get("resets_from_week")
+    if not borrowed or _pct_of(limit) is None or window_expired(limit, now):
+        return "\n".join(_limit_lines(limit, age_s, now))
+    resets = _fmt_reset(limit.get("resets_at"), now)
+    # Stripped before the shared lines run, so the account line states the
+    # figure alone and the borrowed time speaks for itself below it.
+    lines = _limit_lines(dict(limit, resets_at=None), age_s, now)
+    if resets is not None:
+        lines.insert(1, f"resets with the week, {resets}")
+    return "\n".join(lines)
 
 
 def _limit_lines(limit, age_s, now):
@@ -1405,6 +1450,11 @@ class CostMeter(Gtk.Window):
         for key in WINDOW_KEYS:
             window = self.windows[key]
             limit = rows.get(WINDOW_KINDS[key])
+            if key == SCOPED_KEY:
+                # The server leaves `resets_at` off a scoped cap sitting at
+                # nought, so the row takes the week's -- same cycle, and the
+                # tooltip says where it came from. See scoped_limit.
+                limit = scoped_limit(limit, rows.get(utilization.WEEKLY))
             label = self.rows[key]
             context = label.get_style_context()
             for name in LIMIT_CLASSES + ("muted",):

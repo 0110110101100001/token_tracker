@@ -27,6 +27,16 @@ your screen. It shows these rows:
   because it makes the same kind of claim, and above **week** because that row
   and the machine dollars under it are one pair.
 
+  **Its reset time may be the week's.** The server sends the scoped cap without
+  a `resets_at` while it sits at nought, and with one once it has a percentage
+  to report; the weekly row carries one either way, and where both were present
+  the two agreed to the second. They are the same weekly cycle, so the row
+  borrows it rather than staying silent about when it turns over -- and the
+  tooltip says `resets with the week` instead of hanging the time off the
+  figure, because that time is an inference and the row it came from is not this
+  one. A `resets_at` the server does put on the scoped entry is never
+  overwritten.
+
   It is the one limit row with no fallback. The others drop to this machine's
   dollars when no account figure is available; there is no per-model dollar
   figure anywhere in this project, and putting the week's whole spend under a
