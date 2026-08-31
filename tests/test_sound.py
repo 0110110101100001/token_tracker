@@ -12,6 +12,7 @@ that sat there waiting on PulseAudio would fail as a timeout with no hint of why
 """
 
 import os
+import sys
 import time
 import unittest
 import unittest.mock
@@ -147,12 +148,31 @@ class PlayerTest(unittest.TestCase):
         with unittest.mock.patch.object(sound.shutil, "which", lambda _: None):
             self.assertIsNone(sound.player())
 
+    def test_the_branch_follows_the_platform_it_is_running_on(self):
+        # The one place the two branches are tied back to a real machine. Every
+        # other test here pins the answer, so without this the suite would be
+        # green on a `windows()` that had stopped agreeing with `os.name`.
+        self.assertEqual(sound.windows(), os.name == "nt")
+
     def test_the_preference_order_is_the_shipped_one(self):
         self.assertEqual(sound.PLAYERS, ("paplay", "pw-play", "aplay"))
 
 
 class PlayTest(unittest.TestCase):
-    """`play` is a decoration, and a decoration may never take the meter down."""
+    """`play` is a decoration, and a decoration may never take the meter down.
+
+    Everything here is the spawning branch, which `play` takes on everything
+    that is not Windows. The branch is chosen by `os.name` at call time, so the
+    tests below pin it rather than inheriting whatever machine is running them:
+    left to the host, all five would quietly stop testing `play` the moment the
+    suite ran on Windows -- one erroring because nothing was ever spawned, the
+    other four passing on a Popen that was never going to be called.
+    WinsoundPlayTest is the other half, and pins the branch the same way.
+    """
+
+    def setUp(self):
+        self.enterContext(
+            unittest.mock.patch.object(sound, "windows", lambda: False))
 
     def spawned(self):
         """Records what would have been spawned instead of spawning it."""
@@ -197,6 +217,82 @@ class PlayTest(unittest.TestCase):
             with self.spawned() as popen:
                 sound.play(paths.sound_path(sound.BASE_FILE))
         self.assertFalse(popen.return_value.wait.called)
+
+
+class WinsoundPlayTest(unittest.TestCase):
+    """The other branch of `play`: Windows, where the player is `winsound`.
+
+    Run everywhere, not only on Windows. `os.name` is pinned and a stand-in
+    module is put in `sys.modules`, so the branch that ships to every Windows
+    panel is covered on the Linux boxes that run this suite in CI too -- and
+    nothing here makes a noise, on either.
+    """
+
+    def fake_winsound(self):
+        """A stand-in for the standard library module, constants and all.
+
+        The flag values are the module's own rather than literals: what matters
+        is that `play` asks for all three, not what Windows numbers them.
+        """
+        module = unittest.mock.Mock()
+        module.SND_FILENAME = 0x00020000
+        module.SND_ASYNC = 0x00000001
+        module.SND_NODEFAULT = 0x00000002
+        return module
+
+    def played(self, module):
+        return unittest.mock.patch.dict(sys.modules, {"winsound": module})
+
+    def setUp(self):
+        self.enterContext(
+            unittest.mock.patch.object(sound, "windows", lambda: True))
+        # A Windows box has no paplay, and a Linux one must not spawn a player
+        # from the branch that is supposed to have returned before reaching it.
+        self.popen = self.enterContext(
+            unittest.mock.patch.object(sound.subprocess, "Popen"))
+
+    def test_it_hands_the_file_to_winsound_rather_than_spawning_a_player(self):
+        module = self.fake_winsound()
+        path = paths.sound_path(sound.BASE_FILE)
+        with self.played(module):
+            sound.play(path)
+        self.popen.assert_not_called()
+        played, flags = module.PlaySound.call_args.args
+        self.assertEqual(os.path.basename(played), sound.BASE_FILE)
+        self.assertEqual(flags, module.SND_FILENAME
+                         | module.SND_ASYNC
+                         | module.SND_NODEFAULT)
+
+    def test_it_does_not_hold_the_panel_for_the_length_of_the_sound(self):
+        # SND_ASYNC, spelt out on its own: this is called from the GTK main
+        # loop, and the synchronous call would freeze the panel for as long as
+        # the file runs -- 3.75 seconds, at the top tier.
+        module = self.fake_winsound()
+        with self.played(module):
+            sound.play(paths.sound_path(sound.BASE_FILE))
+        self.assertTrue(module.PlaySound.call_args.args[1] & module.SND_ASYNC)
+
+    def test_a_missing_file_is_silence_rather_than_a_crash(self):
+        module = self.fake_winsound()
+        with self.played(module):
+            sound.play(paths.sound_path("no-such-sound.wav"))
+        module.PlaySound.assert_not_called()
+
+    def test_winsound_blowing_up_does_not_reach_the_caller(self):
+        """The Windows twin of PlayTest's last test, and the one that matters
+        more: this is the branch every Windows panel actually runs."""
+        module = self.fake_winsound()
+        module.PlaySound.side_effect = RuntimeError("no audio device")
+        with self.played(module):
+            sound.play(paths.sound_path(sound.BASE_FILE))
+
+    def test_no_winsound_at_all_is_silence_rather_than_a_crash(self):
+        # Import errors are caught with everything else. There is no Windows
+        # without winsound, but `play` promises silence for every failure and
+        # a promise with an exception in it is not one.
+        with unittest.mock.patch.dict(sys.modules, {"winsound": None}):
+            sound.play(paths.sound_path(sound.BASE_FILE))
+        self.popen.assert_not_called()
 
 
 class PlaceholderTest(TempHome):

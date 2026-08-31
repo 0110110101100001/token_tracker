@@ -110,6 +110,19 @@ def player():
     return None
 
 
+def windows():
+    """Whether `play` should hand the file to winsound rather than spawn.
+
+    A named function rather than `os.name == "nt"` written inline, for the same
+    reason `player` is one: it is the seam a test needs. Read at the call site,
+    half of `play` is unreachable on whichever machine happens to run the suite
+    -- the spawning half on Windows, the winsound half everywhere else -- and a
+    test for the unreachable half passes without executing a line of it. With
+    the branch behind this, both halves are tested on both platforms.
+    """
+    return os.name == "nt"
+
+
 def play(path):
     """Play `path`, if it exists and there is anything to play it with.
 
@@ -122,7 +135,7 @@ def play(path):
         if not os.path.isfile(path):
             log.write(f"sound: no such file {path}")
             return
-        if os.name == "nt":
+        if windows():
             import winsound
 
             # ASYNC so the panel is not held for the length of the sound, and
