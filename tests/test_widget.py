@@ -1,5 +1,5 @@
 # tests/test_widget.py
-"""The panel: the text of its two limit rows, and where the window itself lands.
+"""The panel: the text of its three limit rows, and where the window lands.
 
 Two unrelated concerns share this file because they share a subject. The row
 tests are pure text assertions against `window_row`, which is why that text is
@@ -313,6 +313,36 @@ class LimitRowTest(unittest.TestCase):
         self.assertEqual(widget.window_row({}, None)[0], "—")
 
 
+class ScopedCaptionTest(unittest.TestCase):
+    """The scoped row names itself out of the figure it is drawing.
+
+    The other captions are fixed words, because the thing each row measures
+    cannot change. This one can: `weekly_scoped` is a weekly cap on *a* model,
+    and which model that is arrives with the figure, in the scope the server
+    sends beside it. A caption hard-coded to `fable` would be a caption that
+    lies on an account whose scoped cap is on something else.
+    """
+
+    def test_it_takes_the_name_from_the_scope(self):
+        self.assertEqual(widget.scoped_caption({"pct": 15, "scope": "Fable"}),
+                         "fable")
+
+    def test_the_name_is_lowered_to_match_every_other_caption(self):
+        # `Fable` is how the server writes it; every caption on this panel is
+        # lower case, and a single capitalised one reads as a rendering fault.
+        self.assertEqual(widget.scoped_caption({"scope": "Claude Opus"}),
+                         "claude opus")
+
+    def test_a_figure_with_no_scope_falls_back_to_the_kind(self):
+        self.assertEqual(widget.scoped_caption({"pct": 15, "scope": None}),
+                         "scoped")
+
+    def test_no_figure_at_all_falls_back_to_the_kind(self):
+        # The row is drawn whether or not the account has a scoped cap, so this
+        # is the caption on an account that has none.
+        self.assertEqual(widget.scoped_caption(None), "scoped")
+
+
 class SeverityTest(unittest.TestCase):
     """Colour comes from the server, which knows where the thresholds are."""
 
@@ -371,6 +401,52 @@ class LimitTooltipTest(unittest.TestCase):
                                      now=2000.0)
         self.assertIn("has reset", text)
         self.assertNotIn("at least 20 %", text)
+
+
+class ScopedTooltipTest(unittest.TestCase):
+    """The scoped row's tooltip, which has no dollars to put in.
+
+    Every other limit tooltip opens by naming this machine's dollars, because
+    that is where the figure went when it left the row. There is no per-model
+    dollar figure anywhere in this project, so that line has nothing to say here
+    and is left out rather than filled with a total that is not the model's.
+    """
+
+    def setUp(self):
+        # The same fixed instants as LimitRowTest, and for the same reason.
+        self.now = datetime(2026, 8, 13, 17, 0, 0).astimezone().timestamp()
+        self.iso = datetime(2026, 8, 13, 18, 30, 0).astimezone().isoformat()
+
+    def test_it_states_the_floor_and_the_reset(self):
+        text = widget.scoped_tooltip(
+            {"pct": 15, "severity": "normal", "resets_at": self.iso}, 1800.0,
+            now=self.now)
+        self.assertIn("at least 15 %", text)
+        self.assertIn("resets 18:30", text)
+
+    def test_it_claims_no_dollars(self):
+        # The line that would be a lie: the dollars this project records are
+        # every model's, and this row is one model's.
+        text = widget.scoped_tooltip(
+            {"pct": 15, "resets_at": self.iso}, 1800.0, now=self.now)
+        self.assertNotIn("on this machine", text)
+        self.assertNotIn("$", text)
+
+    def test_it_carries_the_age_and_what_refreshes_it(self):
+        text = widget.scoped_tooltip({"pct": 15}, 1800.0, now=self.now)
+        self.assertIn("30 min", text)
+        self.assertIn("/usage", text)
+
+    def test_it_says_so_when_there_is_no_scoped_figure(self):
+        text = widget.scoped_tooltip(None, None)
+        self.assertIn("no account figure", text)
+
+    def test_it_says_so_when_the_window_has_reset(self):
+        past = datetime.fromtimestamp(1000.0, timezone.utc).isoformat()
+        text = widget.scoped_tooltip({"pct": 15, "resets_at": past}, 60.0,
+                                     now=2000.0)
+        self.assertIn("has reset", text)
+        self.assertNotIn("at least 15 %", text)
 
 
 class TurnTextTest(unittest.TestCase):
@@ -918,6 +994,58 @@ class LimitRowsOnThePanelTest(TempHome):
                 {"kind": "weekly_all", "percent": pct_week,
                  "severity": "critical", "resets_at": None, "scope": None,
                  "is_active": True}]
+
+    def scoped(self, pct=15, name="Fable", resets_at=None):
+        """The `weekly_scoped` entry: a weekly cap on one model, named in scope."""
+        return {"kind": "weekly_scoped", "percent": pct, "severity": "normal",
+                "resets_at": resets_at,
+                "scope": {"model": {"id": None, "display_name": name},
+                          "surface": None},
+                "is_active": True}
+
+    @staticmethod
+    def top_of(label):
+        return label.get_parent().child_get_property(label, "top-attach")
+
+    def test_the_scoped_row_sits_directly_under_the_five_hour_row(self):
+        # Placement is the whole of what says which figures belong together, so
+        # it is worth a test rather than being left to whoever edits the grid
+        # next: the week and the machine dollars below it are one pair and must
+        # not be split, and this row is a percentage like the 5h one above it.
+        self.assertEqual(self.top_of(self.window.scoped_value),
+                         self.top_of(self.window.window_5h) + 1)
+        self.assertLess(self.top_of(self.window.scoped_value),
+                        self.top_of(self.window.window_7d))
+
+    def test_the_scoped_row_shows_its_own_figure(self):
+        self.draw(self.figures() + [self.scoped(pct=15)])
+        self.assertEqual(self.window.scoped_value.get_text(), "≈15 %")
+        # And has not disturbed the two it sits between.
+        self.assertEqual(self.window.window_5h.get_text(), "≈12 %")
+        self.assertEqual(self.window.window_7d.get_text(), "≈17 %")
+
+    def test_the_scoped_row_takes_its_caption_from_the_figure(self):
+        self.draw(self.figures() + [self.scoped(name="Fable")])
+        self.assertEqual(self.window.scoped_name.get_text(), "fable")
+
+    def test_a_scoped_cap_on_another_model_renames_the_row(self):
+        # The reason the caption is drawn rather than fixed: the server decides
+        # which model the cap is on, and this panel is not the place to guess.
+        self.draw(self.figures() + [self.scoped(name="Claude Opus")])
+        self.assertEqual(self.window.scoped_name.get_text(), "claude opus")
+
+    def test_an_account_with_no_scoped_cap_keeps_the_row_and_claims_nothing(self):
+        self.draw(self.figures())
+        self.assertEqual(self.window.scoped_value.get_text(), "—")
+        self.assertEqual(self.window.scoped_name.get_text(), "scoped")
+        self.assertTrue(self.window.scoped_value.get_style_context()
+                        .has_class("muted"))
+
+    def test_the_scoped_tooltip_puts_up_no_dollars(self):
+        self.draw(self.figures() + [self.scoped(pct=15)])
+        tooltip = self.window.scoped_value.get_tooltip_text()
+        self.assertIn("at least 15 %", tooltip)
+        self.assertNotIn("on this machine", tooltip)
 
     def test_each_row_shows_its_own_limit(self):
         self.draw(self.figures())

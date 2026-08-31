@@ -19,6 +19,19 @@ your screen. It shows these rows:
   `≈12 % · 18:30`, where `18:30` is the clock time that block resets. Hover for
   what this machine spent in the block. `$67.67` alone means no account figure was
   available.
+- **fable** — the account's weekly cap on one model, read the same way:
+  `≈15 % · Sat 02:59`. **The caption is drawn, not fixed.** The server says which
+  model the cap is on and the row names itself from that, so on an account
+  scoped to something else it reads `claude opus`, and on an account with no
+  scoped cap at all it reads `scoped` beside a dash. It sits under the 5h window
+  because it makes the same kind of claim, and above **week** because that row
+  and the machine dollars under it are one pair.
+
+  It is the one limit row with no fallback. The others drop to this machine's
+  dollars when no account figure is available; there is no per-model dollar
+  figure anywhere in this project, and putting the week's whole spend under a
+  caption naming one model would be a different figure wearing the same label.
+  So it shows `—`, muted, and its tooltip carries no dollar line either.
 - **week** — the same for the weekly limit: `≈17 % · Sat 02:59`. The weekday
   appears because that reset is days out, where a bare `02:59` would read as
   tonight.
@@ -108,7 +121,7 @@ moves: only the figure changes.
 
 What deliberately does **not** roll:
 
-- **the two limit rows.** There is nothing to tween between `≈11 %` and `≈12 %`:
+- **the three limit rows.** There is nothing to tween between `≈11 %` and `≈12 %`:
   the server reports whole percentages, so the row steps however often it is
   fetched. They are repainted when the figure changes and left alone in between.
 - **any dollar row, while the state is stale.** Stale figures are not being
