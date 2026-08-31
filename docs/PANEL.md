@@ -194,12 +194,26 @@ box.
 
 ## Sound
 
-Right click the panel and pick **Sound**. From the next turn on, each one plays a
-short sound, and *which* sound is what the session has cost so far: one tone
-under $10, two from $10, three from $20 and four from $30 — the same figures the
-glyph rate steps at, because they are the same idea said twice. It stays on until
-you pick **Sound off**, and it survives a restart, in `data/config.json` under
-`sound`.
+Right click the panel and pick **Set sound on**. From the next turn on, each one
+plays a short sound, and *which* sound is what that turn cost — the figure on the
+top row, not the session's running total: a slot machine under $10, a cash
+register from $10, and a recording each from $20 and from $30. It stays on until
+you pick **Set sound off**, and it survives a restart, in `data/config.json`
+under `sound`.
+
+The turn rather than the session, because the sound answers "what did that one
+cost" and the person who just pressed enter is waiting on exactly that figure. A
+session total only climbs, so keyed to it the sound would ratchet up once and then
+say the same thing about every turn until midnight, a two-cent one included. How
+deep the day is already in has its own channel: the glyph rate, which does read
+the session, and still steps on these same three figures. The numbers agreeing is
+now a coincidence rather than a coupling, and nothing asserts it — rescaling one
+is a change to that one alone.
+
+Worth knowing before you turn it on: on real traffic the top two files are rare.
+Turns here run around $0.50–$1.70 median depending on where you draw the boundary,
+and fewer than one turn in a hundred reaches $10. Under $10 is the everyday sound
+and $30 is close to a jackpot.
 
 It is its own switch rather than part of Patrik mode, and that is the point:
 glyphs play on your own screen and a sound plays in whatever room you are sitting
@@ -212,24 +226,41 @@ beeping every minute all day. The panel's own opening refresh is skipped too,
 because auto-launch opens a panel at every session start and the figure already
 on disk has not just been charged.
 
-The four files live in `sounds/`. Two of them are placeholders: `pixi run sounds`
-regenerates those from `cost_meter/sound.py`, which synthesises plain sine tones
-with the standard library. `under-10.wav` and `over-10.wav` are not — they are
-real recordings, a slot machine and a cash register, and both are a good deal
-longer than the tones they sit beside.
+The four files live in `sounds/`, and **none of them is a placeholder any more**.
+All four are recordings: a slot machine under $10, a cash register from $10, and
+one apiece for $20 and $30. `cost_meter/sound.py` can still synthesise the four
+sine tones it shipped with, and `pixi run sounds` still does — see the warning
+below, because that is now purely destructive.
 
-They are a trial rather than a settled design, and it is worth knowing which way
-they cut. The lengths no longer climb with the tiers: 3.5s under $10, 1.5s from
-$10, then 0.36s and 0.48s for the two dearest sessions. The rising series that
-let the four be told apart by ear now runs backwards at the bottom, and the two
-cheapest tiers are the loudest thing the panel does. And at 3.5 seconds
-`under-10.wav` is no longer over before the next turn can land: turns that come
-quickly talk over each other, and on Windows each new one cuts the previous off
-where it stands, because `winsound` with `SND_ASYNC` replaces rather than mixes.
+The tone series is therefore gone, and with it the design it stood for. Four
+rising sine runs were meant to be told apart by their length; four recordings are
+told apart by their character, and nothing enforces that they are distinguishable
+at all. Judge that by ear, not from this file. They also differ in format, which
+is fine — the players resample — but is worth knowing before comparing them: 44.1
+kHz mono, 44.1 kHz mono, 24 kHz **stereo**, 16 kHz mono, in tier order.
 
-**`pixi run sounds` rewrites all four**, both recordings included. It does not
-check whether a file is a placeholder before overwriting it, so it will silently
-put sine tones back over them. Keep copies outside `sounds/` before running it.
+Three of the four no longer end before the next turn can land: 3.5s under $10,
+1.5s from $10, 3.25s from $20, 3.75s from $30. Turns that come quickly talk over
+each other, and on Windows each new one cuts the previous off where it stands,
+because `winsound` with `SND_ASYNC` replaces rather than mixes. Only `under-10.wav`
+is really exposed to that, being the file that plays for all but a hundredth of
+turns; a $20 and a $30 turn landing close enough together to collide is not a case
+worth shortening a jackpot for. `tests/test_sound.py` caps every file at 4 seconds
+and `over-30.wav` is 3.75s, so that ceiling is now nearly full — a longer clip than
+these is a deliberate decision about the cap, not a drop-in.
+
+Peak level is not consistent across them and deliberately left alone: `over-20.wav`
+peaks around half of full scale where `over-30.wav` reaches it. By RMS the four
+still land within about 2:3 of each other, so the quiet peak does not make the $20
+tier the quiet tier, and normalising files whose sources are already mastered
+differently seemed the worse trade. Revisit it if a tier turns out to be hard to
+hear over a room.
+
+**`pixi run sounds` rewrites all four**, every recording included, and there is
+nothing left in `sounds/` that it can legitimately regenerate. It does not check
+whether a file is a placeholder before overwriting it, so all it can do now is
+put sine tones back over four recordings, two of which are not stored anywhere
+else in this repository. Keep copies outside `sounds/` before running it.
 
 To use your own, drop four WAVs of the same names over them — `under-10.wav`,
 `over-10.wav`, `over-20.wav`, `over-30.wav`. WAV is not an
@@ -255,12 +286,21 @@ distributed through Pixabay's `freesound_community` account under the [Pixabay
 Content License](https://pixabay.com/service/license-summary/). Leading and
 trailing silence trimmed, nothing else altered.
 
-The two are not on the same footing, and the difference matters whenever these
+`over-20.wav` and `over-30.wav` were supplied to the project as finished files
+and **their sources are not recorded here yet**. Both ship unaltered, with no
+trimming: `over-20.wav` is 24 kHz stereo, 3.25s, and `over-30.wav` is 16 kHz mono,
+3.75s. This paragraph is the placeholder for the credits they need. Fill it in
+before the panel goes anywhere outside this repository — a file whose licence
+nobody can name is the one kind that cannot be cleared later by looking at it, and
+these two are now half of the feature.
+
+The four are not on the same footing, and the difference matters whenever these
 files are replaced. Crediting Played N Faved is a *condition* of CC BY: ship
 `under-10.wav` without naming them and the feature is out of compliance. The
-Pixabay licence asks for no attribution, so the second credit is a courtesy and
-a record of where the file came from — worth keeping for whoever wonders later,
-but not an obligation.
+Pixabay licence asks for no attribution, so that credit is a courtesy and a
+record of where the file came from — worth keeping for whoever wonders later, but
+not an obligation. The other two are neither yet, which is why they are worth
+chasing rather than leaving.
 
 Anyone who regenerates a file with `pixi run sounds` can drop its credit along
 with it: a synthesised sine tone is the project's own.
