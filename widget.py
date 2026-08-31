@@ -73,7 +73,8 @@ EDGE = 16
 CORNER = 32
 AMBER_AT = 60
 RED_AT = 85
-# Colour classes for the two limit rows. Declared after `muted` in the CSS, so
+# Colour classes for the three limit rows. Declared after `muted` in the CSS,
+# so
 # they win the cascade wherever both apply.
 LIMIT_CLASSES = ("green", "amber", "red")
 # The file monitor only fires when the hook writes, so a hook that has stopped
@@ -107,15 +108,21 @@ USAGE_POLL_SECONDS = 60
 # turn's cost and the next one's is not a quantity worth animating, and it would
 # run the row downwards whenever a cheap turn followed an expensive one.
 #
-# The two limit rows are not among them. They carry an integer percentage that
+# The three limit rows are not among them. They carry an integer percentage that
 # moves once every few hours, which has nothing to tween, and the dollars that
 # used to animate there have moved into the tooltip.
 ROLL_KEYS = ("last_turn", "session", "today", "week_local")
 TURN_KEY = "last_turn"
-WINDOW_KEYS = ("window_5h", "window_7d")
+WINDOW_KEYS = ("window_5h", "window_scoped", "window_7d")
 # Which account limit each row draws, named as the server names them.
 WINDOW_KINDS = {"window_5h": utilization.SESSION,
+                "window_scoped": utilization.SCOPED,
                 "window_7d": utilization.WEEKLY}
+# The one row with no dollars behind it and no fixed caption: state.json has no
+# per-model figure to fall back on, and which model the cap is on comes with the
+# figure. Both differences are read off this key rather than off a kind, so the
+# other two rows stay one code path.
+SCOPED_KEY = "window_scoped"
 # The server's severity, mapped onto the panel's colour classes.
 SEVERITY_CLASSES = {"normal": "green", "warning": "amber", "critical": "red"}
 ROLL_FRAME_MS = 16
@@ -402,6 +409,56 @@ def window_expired(limit, now):
     return end is not None and now >= end
 
 
+def scoped_limit(scoped, weekly):
+    """The scoped figure with a reset time on it, borrowed from the week if need be.
+
+    The server sends `weekly_scoped` without a `resets_at` when the cap is at
+    nought, and with one when it is not; `weekly_all` carries one either way.
+    Both describe the same weekly cycle -- in the sample where both were present
+    they agreed to the second, differing only in microseconds -- so the week's
+    time is the scoped row's time, and a row that said nothing about when it
+    turns over would be withholding a fact the panel has.
+
+    Borrowed, not adopted. The copy carries `resets_from_week`, and the tooltip
+    words it differently for it: a time the server did not put on this entry is
+    an inference, and this panel does not print inferences as figures. It is a
+    copy for the same reason -- the rows dict is read again on every repaint,
+    and filling it in place would lose the distinction after one pass.
+
+    None in stays None out. A reset beside a dash would claim a window for a
+    figure that does not exist.
+    """
+    if not scoped:
+        return None
+    filled = dict(scoped)
+    borrowed = (filled.get("resets_at") is None
+                and (weekly or {}).get("resets_at") is not None)
+    if borrowed:
+        filled["resets_at"] = weekly["resets_at"]
+    filled["resets_from_week"] = borrowed
+    return filled
+
+
+def scoped_caption(limit):
+    """The caption for the scoped row: the model the cap is on, or `scoped`.
+
+    Every other caption on the panel is a fixed word, because what the row
+    measures cannot change. This one can. `weekly_scoped` is a weekly cap on one
+    model, and which model arrives with the figure rather than being known here;
+    utilization.py lifts it out of the scope the server sends alongside.
+
+    Lower case because every caption on this panel is, and a capitalised one
+    among them reads as a rendering fault rather than as the server's spelling.
+
+    `scoped` when there is no name to use -- an account with no scoped cap, or a
+    figure that arrived without a scope. The row is drawn either way, so it
+    needs a caption either way, and naming the kind is the honest answer when
+    the model is not known.
+    """
+    name = (limit or {}).get("scope")
+    return name.lower() if name else "scoped"
+
+
 def window_row(window, limit, now=None):
     """The text and style class for one limit row, as (text, class).
 
@@ -451,24 +508,60 @@ def window_tooltip(window, limit, age_s, now=None):
     exactly this, together with the one thing that would move it.
     """
     now = time.time() if now is None else now
-    lines = [f"{_fmt_usd(window.get('usd'))} on this machine"]
+    machine = f"{_fmt_usd(window.get('usd'))} on this machine"
+    return "\n".join([machine] + _limit_lines(limit, age_s, now))
+
+
+def scoped_tooltip(limit, age_s, now=None):
+    """The scoped row's tooltip: the account lines, and no machine line.
+
+    Every other limit tooltip opens with this machine's dollars, because that is
+    where the figure went when it left the row. This row has no such figure to
+    open with: the dollars this project records are every model's together, and
+    putting that total under a caption naming one model would be the very
+    two-scopes-on-one-claim mistake window_row exists to avoid. So the line is
+    absent rather than approximated, and what is left is the account's own
+    figure and how old it is.
+
+    A reset time borrowed from the week gets a line of its own rather than
+    riding on the figure. On every other row `, resets 18:30` is part of the
+    claim the percentage makes, and this one did not come with the percentage --
+    scoped_limit inferred it. Saying which is which is the whole reason the row
+    is allowed to show it at all.
+    """
+    now = time.time() if now is None else now
+    borrowed = (limit or {}).get("resets_from_week")
+    if not borrowed or _pct_of(limit) is None or window_expired(limit, now):
+        return "\n".join(_limit_lines(limit, age_s, now))
+    resets = _fmt_reset(limit.get("resets_at"), now)
+    # Stripped before the shared lines run, so the account line states the
+    # figure alone and the borrowed time speaks for itself below it.
+    lines = _limit_lines(dict(limit, resets_at=None), age_s, now)
+    if resets is not None:
+        lines.insert(1, f"resets with the week, {resets}")
+    return "\n".join(lines)
+
+
+def _limit_lines(limit, age_s, now):
+    """The account's own lines of a limit tooltip, machine dollars aside.
+
+    Shared so the scoped row cannot drift from the two rows above it: how the
+    floor is worded, when a reset is named, and what a reader can do about a
+    figure that has not moved are one question, not three.
+    """
     pct = _pct_of(limit)
     if pct is None:
-        lines.append("no account figure available")
-        return "\n".join(lines)
+        return ["no account figure available"]
     if window_expired(limit, now):
-        lines.append("the account figure describes a window that has reset")
-        return "\n".join(lines)
+        return ["the account figure describes a window that has reset"]
     resets = _fmt_reset(limit.get("resets_at"), now)
     account = f"account at least {pct} %"
     if resets is not None:
         account += f", resets {resets}"
-    lines.append(account)
     if age_s is None:
-        lines.append("/usage refreshes it")
-    else:
-        lines.append(f"figure {summary.format_age(age_s)} old; /usage refreshes it")
-    return "\n".join(lines)
+        return [account, "/usage refreshes it"]
+    return [account,
+            f"figure {summary.format_age(age_s)} old; /usage refreshes it"]
 
 
 def billing_text(billing):
@@ -497,6 +590,17 @@ def _row(grid, index, caption, labels):
     the caller only ever needs the value label back, which is the one that gets
     rewritten.
     """
+    return _captioned_row(grid, index, caption, labels)[1]
+
+
+def _captioned_row(grid, index, caption, labels):
+    """The same row, with the caption label handed back as well.
+
+    Only the scoped row needs it: every other caption is a fixed word set once
+    here, and that one is rewritten as the figure names its model. Kept beside
+    `_row` rather than folded into it so the eight callers that want only the
+    value keep saying so.
+    """
     left = Gtk.Label(label=caption, xalign=0.0)
     right = Gtk.Label(label="—", xalign=1.0)
     right.get_style_context().add_class("value")
@@ -504,7 +608,7 @@ def _row(grid, index, caption, labels):
     grid.attach(left, 0, index, 1, 1)
     grid.attach(right, 1, index, 1, 1)
     labels.extend((left, right))
-    return right
+    return left, right
 
 
 class PatrikOverlay(Gtk.Window):
@@ -718,20 +822,28 @@ class CostMeter(Gtk.Window):
         self.today = _row(grid, 2, "today", self.labels)
         grid.attach(Gtk.Separator(), 0, 3, 2, 1)
         self.window_5h = _row(grid, 4, "5h window", self.labels)
-        self.window_7d = _row(grid, 5, "week", self.labels)
+        # Directly under the 5h window, because it is the same kind of claim --
+        # the account's share of a limit -- and because the week and the machine
+        # dollars below it are a pair that must not be split. Its caption is
+        # written here only as a placeholder: draw_limits replaces it with the
+        # model the figure names, and `scoped` is what an account with no scoped
+        # cap is left reading.
+        self.scoped_name, self.scoped_value = _captioned_row(
+            grid, 5, "scoped", self.labels)
+        self.window_7d = _row(grid, 6, "week", self.labels)
         # Directly under the percentage it belongs to, because the two describe
         # the same seven days by different measures: the account's share of its
         # limit, and what this installation put into it. Adjacency is what says
         # they are one window; a caption naming the machine is what stops the
         # dollars being read as the account's.
-        self.week_local = _row(grid, 6, "this machine", self.labels)
+        self.week_local = _row(grid, 7, "this machine", self.labels)
         # Below a separator of its own: everything above is a measured figure,
         # and this is the fact that says what those figures mean — money owed on
         # API billing, notional against a seat.
-        grid.attach(Gtk.Separator(), 0, 7, 2, 1)
-        self.billing = _row(grid, 8, "billing", self.labels)
+        grid.attach(Gtk.Separator(), 0, 8, 2, 1)
+        self.billing = _row(grid, 9, "billing", self.labels)
         # The rows made of state.json's dollars, and so the rows staleness mutes.
-        # The two limit rows are deliberately absent — see set_stale: they come
+        # The three limit rows are deliberately absent — see set_stale: they come
         # from Claude Code's cache instead, and `muted` reaches them only through
         # draw_limits, when there is no account figure and they are showing
         # dollars after all. The billing row rides with the plain ones: it is
@@ -741,7 +853,8 @@ class CostMeter(Gtk.Window):
         self.rows = {"last_turn": self.last_turn,
                      "session": self.session, "today": self.today,
                      "week_local": self.week_local,
-                     "window_5h": self.window_5h, "window_7d": self.window_7d}
+                     "window_5h": self.window_5h, "window_7d": self.window_7d,
+                     SCOPED_KEY: self.scoped_value}
 
         # Animation state. `_roll_source` is a single timer for the whole panel,
         # retargeted in place rather than stacked; `_roll_began` is what progress
@@ -793,11 +906,11 @@ class CostMeter(Gtk.Window):
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
         self.warning.set_no_show_all(True)
-        # Row 9, below `billing` on row 8: the two shared row 8 and GTK drew them
-        # on top of each other, so the red staleness note sat over the billing
-        # text. Every row index here is literal, so a row added above has to push
-        # this one down with it.
-        grid.attach(self.warning, 0, 9, 2, 1)
+        # Row 10, below `billing` on row 9: the two once shared a row and GTK drew
+        # them on top of each other, so the red staleness note sat over the
+        # billing text. Every row index here is literal, so a row added above has
+        # to push this one down with it -- the scoped row did exactly that.
+        grid.attach(self.warning, 0, 10, 2, 1)
 
         # After every label exists, since this is what sizes them.
         self.apply_scale(self.scale)
@@ -1320,7 +1433,7 @@ class CostMeter(Gtk.Window):
         # here would present a bare dollar figure as an account percentage.
 
     def draw_limits(self):
-        """Paint both limit rows from the account figures in state.json.
+        """Paint every limit row from the account figures in state.json.
 
         Separate from draw_row because these rows do not animate: there is nothing
         to tween between 11 % and 12 %, and the figure behind them is re-asked of
@@ -1337,6 +1450,11 @@ class CostMeter(Gtk.Window):
         for key in WINDOW_KEYS:
             window = self.windows[key]
             limit = rows.get(WINDOW_KINDS[key])
+            if key == SCOPED_KEY:
+                # The server leaves `resets_at` off a scoped cap sitting at
+                # nought, so the row takes the week's -- same cycle, and the
+                # tooltip says where it came from. See scoped_limit.
+                limit = scoped_limit(limit, rows.get(utilization.WEEKLY))
             label = self.rows[key]
             context = label.get_style_context()
             for name in LIMIT_CLASSES + ("muted",):
@@ -1344,7 +1462,16 @@ class CostMeter(Gtk.Window):
             text, style = window_row(window, limit)
             context.add_class(style)
             label.set_text(text)
-            label.set_tooltip_text(window_tooltip(window, limit, age))
+            if key == SCOPED_KEY:
+                # Two things this row does that the others cannot: it names the
+                # model the cap is on, and its tooltip has no machine dollars to
+                # open with. Both because `window` is empty here -- state.json
+                # records no per-model figure -- which is also what leaves the
+                # row reading `—`, muted, when the account has no scoped cap.
+                self.scoped_name.set_text(scoped_caption(limit))
+                label.set_tooltip_text(scoped_tooltip(limit, age))
+            else:
+                label.set_tooltip_text(window_tooltip(window, limit, age))
 
     def draw_row(self, key):
         """Paint one value row from whatever the roll says it is showing.

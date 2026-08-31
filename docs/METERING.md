@@ -267,7 +267,7 @@ your spend.
   and runs the same hooks.
 - **A whole percentage point is the finest the server reports.** The figures arrive
   as integers, so the rows step rather than glide however often they are fetched,
-  and the two limit rows are deliberately left out of the panel's rolling
+  and the three limit rows are deliberately left out of the panel's rolling
   animation for that reason.
 - **USD here is an API-equivalent, not an invoice** — on a seat. The dollar
   figures are then a consistent way to compare and weight usage, not a bill you

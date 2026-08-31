@@ -36,14 +36,15 @@ from . import paths, store
 # a figure it can re-fetch on demand; this panel cannot ask for one.
 MAX_AGE_SECONDS = 7 * 86400.0
 
-# The two limits the panel draws, named as the server names them.
+# The three limits the panel draws, named as the server names them.
 SESSION = "session"
 WEEKLY = "weekly_all"
+# A weekly cap on one model. Which model is not fixed -- it arrives in the
+# entry's `scope`, and the row names itself from it.
+SCOPED = "weekly_scoped"
 
-# The kinds worth carrying into state.json. `weekly_scoped` -- a weekly cap on
-# one model -- has no row, and is parsed anyway so that adding one later is a
-# widget change and nothing more.
-KINDS = (SESSION, WEEKLY, "weekly_scoped")
+# The kinds worth carrying into state.json.
+KINDS = (SESSION, WEEKLY, SCOPED)
 
 # The older shape, mapped onto the same kind names.
 LEGACY_KEYS = {"five_hour": SESSION, "seven_day": WEEKLY}
