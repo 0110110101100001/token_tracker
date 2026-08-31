@@ -440,7 +440,7 @@ def scoped_limit(scoped, weekly):
 
 
 def scoped_caption(limit):
-    """The caption for the scoped row: the model the cap is on, or `scoped`.
+    """The caption for the scoped row: the model the cap is on, or `fable`.
 
     Every other caption on the panel is a fixed word, because what the row
     measures cannot change. This one can. `weekly_scoped` is a weekly cap on one
@@ -450,13 +450,16 @@ def scoped_caption(limit):
     Lower case because every caption on this panel is, and a capitalised one
     among them reads as a rendering fault rather than as the server's spelling.
 
-    `scoped` when there is no name to use -- an account with no scoped cap, or a
-    figure that arrived without a scope. The row is drawn either way, so it
-    needs a caption either way, and naming the kind is the honest answer when
-    the model is not known.
+    `fable` when there is no name to use -- an account whose scoped cap sits at
+    nought sends the figure without a scope, and the row is drawn either way, so
+    it needs a caption either way. Fable is the cap this account has, so the
+    stand-in names it: a row that reads `fable —` is one waiting for a figure,
+    where `scoped —` read as a row measuring something the panel could not name.
+    The stand-in only ever holds the place of a name that has not arrived -- a
+    scope of any kind renames the row the moment one does.
     """
     name = (limit or {}).get("scope")
-    return name.lower() if name else "scoped"
+    return name.lower() if name else "fable"
 
 
 def window_row(window, limit, now=None):
@@ -826,10 +829,10 @@ class CostMeter(Gtk.Window):
         # the account's share of a limit -- and because the week and the machine
         # dollars below it are a pair that must not be split. Its caption is
         # written here only as a placeholder: draw_limits replaces it with the
-        # model the figure names, and `scoped` is what an account with no scoped
-        # cap is left reading.
+        # model the figure names, and `fable` is what a row with no scope on it
+        # yet is left reading. See scoped_caption.
         self.scoped_name, self.scoped_value = _captioned_row(
-            grid, 5, "scoped", self.labels)
+            grid, 5, "fable", self.labels)
         self.window_7d = _row(grid, 6, "week", self.labels)
         # Directly under the percentage it belongs to, because the two describe
         # the same seven days by different measures: the account's share of its

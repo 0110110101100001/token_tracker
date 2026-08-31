@@ -319,8 +319,9 @@ class ScopedCaptionTest(unittest.TestCase):
     The other captions are fixed words, because the thing each row measures
     cannot change. This one can: `weekly_scoped` is a weekly cap on *a* model,
     and which model that is arrives with the figure, in the scope the server
-    sends beside it. A caption hard-coded to `fable` would be a caption that
-    lies on an account whose scoped cap is on something else.
+    sends beside it. `fable` is only the stand-in for a figure that names no
+    scope; an account capped on another model is still renamed by the server's
+    own spelling, which is why the caption is drawn rather than fixed.
     """
 
     def test_it_takes_the_name_from_the_scope(self):
@@ -333,14 +334,14 @@ class ScopedCaptionTest(unittest.TestCase):
         self.assertEqual(widget.scoped_caption({"scope": "Claude Opus"}),
                          "claude opus")
 
-    def test_a_figure_with_no_scope_falls_back_to_the_kind(self):
+    def test_a_figure_with_no_scope_falls_back_to_the_cap_this_account_has(self):
         self.assertEqual(widget.scoped_caption({"pct": 15, "scope": None}),
-                         "scoped")
+                         "fable")
 
-    def test_no_figure_at_all_falls_back_to_the_kind(self):
-        # The row is drawn whether or not the account has a scoped cap, so this
-        # is the caption on an account that has none.
-        self.assertEqual(widget.scoped_caption(None), "scoped")
+    def test_no_figure_at_all_falls_back_to_the_cap_this_account_has(self):
+        # The row is drawn whether or not a figure has arrived, so this is the
+        # caption before one has -- and on an account with no scoped cap at all.
+        self.assertEqual(widget.scoped_caption(None), "fable")
 
 
 class ScopedResetTest(unittest.TestCase):
@@ -1108,7 +1109,7 @@ class LimitRowsOnThePanelTest(TempHome):
     def test_an_account_with_no_scoped_cap_keeps_the_row_and_claims_nothing(self):
         self.draw(self.figures())
         self.assertEqual(self.window.scoped_value.get_text(), "—")
-        self.assertEqual(self.window.scoped_name.get_text(), "scoped")
+        self.assertEqual(self.window.scoped_name.get_text(), "fable")
         self.assertTrue(self.window.scoped_value.get_style_context()
                         .has_class("muted"))
 
