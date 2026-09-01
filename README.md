@@ -21,6 +21,7 @@ the panel closed, uninstalling. Everything else is next door:
 - **[Reference](docs/REFERENCE.md)** — what the installer writes into
   `~/.claude/settings.json`, starting and stopping the panel by hand, every file
   under `data/`, the `config.json` settings, troubleshooting, and the tests.
+- **[Changelog](docs/CHANGELOG.md)** — what changed in each release.
 
 ## Known issue in this version: the Claude Desktop app
 

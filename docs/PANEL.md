@@ -131,9 +131,6 @@ moves: only the figure changes.
 
 What deliberately does **not** roll:
 
-- **the three limit rows.** There is nothing to tween between `≈11 %` and `≈12 %`:
-  the server reports whole percentages, so the row steps however often it is
-  fetched. They are repainted when the figure changes and left alone in between.
 - **any dollar row, while the state is stale.** Stale figures are not being
   presented as current, and rolling them would say the opposite. They land on
   their last known values and stay put.
