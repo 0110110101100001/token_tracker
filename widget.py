@@ -1687,11 +1687,55 @@ class CostMeter(Gtk.Window):
         """The panel's rectangle in overlay coordinates: (x, y, width, height).
 
         What `Swarm.burst` is handed, so the glyphs start on the rows rather than
-        somewhere in the margin. The overlay is the panel grown by PATRIK_MARGIN
-        on every side, so the panel sits at exactly that offset inside it.
+        somewhere in the margin.
+
+        Measured against the overlay's real position rather than assumed to be
+        (PATRIK_MARGIN, PATRIK_MARGIN). `follow_overlay` *asks* for the panel's
+        position less the margin, and near a screen edge it does not get it: the
+        request is off-screen, and the window manager moves the window back into
+        the work area. Measured under mutter, a 410x350 overlay on a 3072x1728
+        screen -- asked (2792, 1508) for a panel in the bottom-right corner,
+        granted (2662, 1378), which is exactly the clamp that keeps the window
+        inside the screen; asked (-130, -130) at the top-left, granted (67, 32),
+        the work area's own origin under a top bar and a dock. A panel opening at
+        the origin is that second case, so this is not only about corners.
+
+        The margin on a clamped side is therefore not there at all, and trusting
+        the constant threw every glyph up to a full margin clear of the panel --
+        out into the empty margin, or off the visible window entirely -- which
+        read as money coming from nowhere near the table.
+
+        The read is one frame stale, and deliberately so. Measured: right after
+        `move`, `get_position` still reports the position before it, and one
+        16 ms turn of the main loop later it reports what the window manager
+        granted. Stale-but-granted is the useful answer and fresh-but-requested
+        is not, which is why `on_patrik_frame` emits before it calls
+        `follow_overlay` rather than after. A clamp holds still while the panel
+        sits at an edge, so at rest the stale read is simply the right one; a
+        drag costs one frame of glyphs at the previous offset.
+
+        Falls back to the margin whenever the measurement puts the panel outside
+        the overlay, which is not a hypothetical: a window that has not been
+        placed yet reports (0, 0), and the overlay is built on demand, so the
+        first frame of a celebration can read one. An offset taken from that
+        would spawn the glyphs beyond the overlay's own edge, where nothing is
+        drawn at all -- worse than the bug this method exists to fix, so an
+        implausible measurement is refused rather than used. The constant is the
+        best guess available in that case, and it is right whenever the overlay
+        did get the position it asked for.
         """
         size = self.get_size()
-        return (PATRIK_MARGIN, PATRIK_MARGIN, size.width, size.height)
+        margin = (PATRIK_MARGIN, PATRIK_MARGIN, size.width, size.height)
+        if self.overlay is None:
+            return margin
+        x, y = self.get_position()
+        overlay_x, overlay_y = self.overlay.get_position()
+        offset_x, offset_y = x - overlay_x, y - overlay_y
+        overlay_size = self.overlay.get_size()
+        if not (0 <= offset_x <= overlay_size.width - size.width
+                and 0 <= offset_y <= overlay_size.height - size.height):
+            return margin
+        return (offset_x, offset_y, size.width, size.height)
 
     def build_overlay(self):
         """The glyph window, or None where the screen cannot composite one.

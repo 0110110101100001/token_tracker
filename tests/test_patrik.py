@@ -717,8 +717,24 @@ class PanelScaleTest(PanelTest):
         size is scaled and the rectangle is not -- `panel_rect` is already in
         overlay pixels, and scaling it too would throw the spawn points clear of
         the panel.
+
+        `panel_rect` is held at the margin for the length of the test. Left to
+        itself it is measured against the overlay's real position, so it moves
+        with the shake and can answer a spawn frame and an assertion here
+        differently -- and this test would be reading one rectangle while the
+        glyphs were thrown from another. What the measurement does when the
+        window manager moves the overlay is OverlayTest's subject; here it is
+        noise over the thing being measured, which is the scale.
         """
         self.window.set_patrik(True)
+        window = self.window
+        pinned = unittest.mock.patch.object(
+            self.window, "panel_rect",
+            side_effect=lambda: (widget.PATRIK_MARGIN, widget.PATRIK_MARGIN,
+                                 window.get_size().width,
+                                 window.get_size().height))
+        pinned.start()
+        self.addCleanup(pinned.stop)
         for scale in (0.7, 1.0, 3.0):
             with self.subTest(scale=scale):
                 self.window.apply_scale(scale)
@@ -1009,14 +1025,83 @@ class OverlayTest(PanelTest):
     def test_the_panel_rectangle_sits_inside_the_overlay(self):
         # What Swarm.burst is handed, so the glyphs start on the rows rather than
         # in a corner of the margin.
+        #
+        # Flush against the edge is allowed -- `>=`, not `>`. A margin the window
+        # manager clamped away is a margin the panel is not inset by, and
+        # `panel_rect` reports that rather than the margin it asked for; see its
+        # docstring. Requiring a gap here required the clamp never to happen.
         self.window.set_patrik(True)
         self.turn()
         x, y, width, height = self.window.panel_rect()
         overlay = self.window.overlay.get_size()
-        self.assertGreater(x, 0)
-        self.assertGreater(y, 0)
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
         self.assertLessEqual(x + width, overlay.width)
         self.assertLessEqual(y + height, overlay.height)
+
+    def test_an_unplaced_overlay_falls_back_to_the_margin(self):
+        """An implausible measurement is refused, not used.
+
+        A window the compositor has not placed yet reports (0, 0), and the
+        overlay is built on demand, so the first frame of a celebration can read
+        one. Subtracting that from the panel's own position puts the panel far
+        outside the overlay, and glyphs spawned there are beyond its edge, where
+        nothing is drawn at all -- no money instead of money in the wrong place.
+
+        So the offset is only used when the panel really does fall inside the
+        overlay, and the margin the overlay asked for is what answers otherwise.
+        """
+        self.window.set_patrik(True)
+        self.turn()
+        size = self.window.get_size()
+        panel_x, panel_y = self.window.get_position()
+        # Further from the panel than the overlay is wide: whatever this is, the
+        # panel is not inside it.
+        unplaced = (panel_x - 10_000, panel_y - 10_000)
+        with unittest.mock.patch.object(
+                self.window.overlay, "get_position", return_value=unplaced):
+            rect = self.window.panel_rect()
+        self.assertEqual(
+            rect, (widget.PATRIK_MARGIN, widget.PATRIK_MARGIN,
+                   size.width, size.height))
+
+    def test_a_clamped_overlay_still_throws_the_glyphs_from_the_panel(self):
+        """A panel in a screen corner: the overlay cannot sit where it asked.
+
+        The overlay is the panel grown by PATRIK_MARGIN on every side, so for a
+        panel near an edge its requested position is off the screen and the
+        window manager moves it back into the work area. Measured under mutter,
+        panel in the bottom-right corner of a 3072x1728 screen: the overlay asked
+        for (2792, 1508) and was given (2662, 1378) -- 2662 + 410 and 1378 + 350
+        are the screen's own width and height, the clamp that keeps the window
+        inside it. In the middle of the screen the same request is granted
+        untouched.
+
+        So the margin on the clamped side is simply not there, the panel is *not*
+        at (PATRIK_MARGIN, PATRIK_MARGIN) inside the overlay, and a rect that
+        assumed it was put every glyph a full margin away from the rows -- out in
+        the empty margin, or off the visible window altogether.
+
+        The clamp is faked rather than provoked: asking a real window manager for
+        an off-screen position and waiting to see what it grants needs a main
+        loop and a specific monitor size, and neither belongs in a unit test.
+        """
+        self.window.set_patrik(True)
+        self.turn()
+        panel_x, panel_y = self.window.get_position()
+        # What the window manager grants a panel in the top-left corner: the
+        # overlay pinned to the work area, with no margin above or to the left.
+        clamped = (panel_x, panel_y)
+        with unittest.mock.patch.object(
+                self.window.overlay, "get_position", return_value=clamped):
+            x, y, width, height = self.window.panel_rect()
+        self.assertEqual(
+            (x, y), (0, 0),
+            "the glyphs are thrown from a margin the overlay does not have")
+        # And the rect still describes the panel, not a point: every glyph is
+        # spawned somewhere inside it.
+        size = self.window.get_size()
+        self.assertEqual((width, height), (size.width, size.height))
 
     def test_the_overlay_stays_out_of_the_taskbar(self):
         # UTILITY for the same reason the panel is: it is what win32 turns into

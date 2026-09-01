@@ -206,6 +206,18 @@ table rather than fading out inside it. That window ignores the mouse entirely,
 so clicks in it reach the panel or the desktop underneath as though it were not
 there.
 
+**Near a screen edge that margin is not there**, and the panel asks for it
+anyway. The window it asks for hangs off the screen, so the window manager moves
+it back into the work area instead — measured under mutter, a panel in the
+bottom-right corner of a 3072x1728 screen: the overlay asked for (2792, 1508)
+and was granted (2662, 1378), which is the clamp that keeps it inside the screen
+exactly. A panel at the top-left is the same case, and so is a panel at the
+origin, where the work area starts below a top bar and beside a dock. Nothing is
+done about the lost margin — glyphs on that side cross the screen edge rather
+than the overlay's — but where the glyphs *start* is measured against where the
+overlay actually is, not where it asked to be, because the two differ by a whole
+margin there and money has to come off the rows.
+
 **On a machine that cannot composite** — no RGBA visual, or no compositor — there
 is no overlay and no glyphs, and the meter carries on exactly as before. An
 opaque grey slab over the desktop would be far worse than no celebration, and
