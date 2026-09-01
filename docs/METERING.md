@@ -215,12 +215,13 @@ the same rule the **session** row already follows.
 million tokens (input and output) for each model you use. Edit it directly
 whenever Anthropic changes its rates.
 
-One rate in that table has a known expiry date: `claude-sonnet-5` is priced
-at its **introductory** rate of $2.00 / $10.00, which is in force only
-through **2026-08-31**. From 2026-09-01 the sticker price of $3.00 / $15.00
-applies and the two numbers need editing by hand. Nothing in the tool tracks
-this — there is deliberately no dated-override mechanism, so the table says
-what you tell it and the calendar is yours to watch.
+No rate in that table has a known expiry date. `claude-sonnet-5` used to
+carry one: $2.00 / $10.00 was announced at launch as an **introductory** rate
+through 2026-08-31, with a rise to $3.00 / $15.00 scheduled for 2026-09-01.
+Anthropic has since made $2.00 / $10.00 the standard price and cancelled that
+increase, so the table needs no edit for it. Nothing in the tool tracks rate
+changes either way — there is deliberately no dated-override mechanism, so the
+table says what you tell it and the calendar is yours to watch.
 
 The lookup is an **exact string match** against whatever the transcript
 records — there is no alias resolution, and none is wanted: guessing that
