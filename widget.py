@@ -132,10 +132,12 @@ ROLL_MIN_DELTA = 0.01
 # menu says otherwise, and the key lives in the same config.json as the position
 # and the scale, so it outlives the panel that was asked for it.
 PATRIK_KEY = "patrik_mode"
-# The audible half, on its own key rather than inside Patrik mode's. Two
-# switches because they are two decisions: an animation plays on your own screen,
-# a sound plays in whatever room you are sitting in, and somebody who wants the
-# glyphs in an open-plan office wants exactly one of them.
+# The audible half, on its own key rather than inside Patrik mode's, because
+# they are two decisions: an animation plays on your own screen, a sound plays in
+# whatever room you are sitting in, and somebody who wants the glyphs in an
+# open-plan office wants exactly one of them. A switch *within* Patrik mode all
+# the same: with the mode off nothing plays, whatever this key says, and the
+# preference survives to be found still on when the mode comes back.
 SOUND_KEY = "sound"
 # The glyphs are drawn in a second, transparent, always-on-top window rather than
 # inside the panel, because the whole point is that they leave it. This is how far
@@ -1313,12 +1315,16 @@ class CostMeter(Gtk.Window):
             # startup from an absent stamp would be the one burst that most
             # deserves to happen.
             session_usd = (state.get("session") or {}).get("usd")
-            if self._opened and self.patrik_enabled():
+            # Read once and spent twice: both halves of the celebration hang off
+            # it, and `patrik_enabled` goes to disk every time it is asked.
+            patrik_on = self._opened and self.patrik_enabled()
+            if patrik_on:
                 self.celebrate(turn_usd, session_usd)
-            # Independently of the glyphs, and gated on `_opened` for the same
-            # reason: auto-launch opens a panel at every session start, and the
-            # figure already on disk has not just been charged. A noise on that
-            # would be the panel greeting a session it did not witness.
+            # The sound is the audible half of that same celebration, so it needs
+            # Patrik mode on as well as its own switch. With the mode off the
+            # panel is meant to be a panel: a noise with nothing on screen to
+            # account for it is the mode heckling from somewhere the user cannot
+            # see, and the menu entry that would explain it reads as switched off.
             #
             # The turn's own cost, not the session's: the sound answers "what did
             # that one cost", which is the figure on the top row and the only one
@@ -1327,7 +1333,7 @@ class CostMeter(Gtk.Window):
             # run up $500 would play the loudest file for a two-cent turn and go
             # on playing it until midnight -- and the glyph rate, which does read
             # the session, is already the channel that says how deep we are in.
-            if self._opened and self.sound_enabled():
+            if patrik_on and self.sound_enabled():
                 sound.play_for(turn_usd)
 
         for key in WINDOW_KEYS:
@@ -1641,7 +1647,11 @@ class CostMeter(Gtk.Window):
         return config.get(PATRIK_KEY) is True
 
     def sound_enabled(self):
-        """Whether a turn makes a noise. Read from disk, never cached.
+        """Whether the sound is asked for. Read from disk, never cached.
+
+        The stored preference, not the whole answer: a turn only makes a noise
+        when Patrik mode is on too -- see the gate in `refresh`. Kept separate so
+        that switching the mode off and on again finds the sound as it was left.
 
         Off for anything but a literal `true`, exactly as `patrik_enabled` is: a
         panel that started beeping because somebody hand-edited `"yes"` into the

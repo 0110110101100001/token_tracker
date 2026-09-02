@@ -349,10 +349,20 @@ class PanelTest(TempHome):
         self.addCleanup(self.window.destroy)
         self.addCleanup(self.window.update_config,
                         lambda c: c.pop(widget.SOUND_KEY, None))
+        self.addCleanup(self.window.update_config,
+                        lambda c: c.pop(widget.PATRIK_KEY, None))
         # Nothing in the suite is allowed to make a noise; see the module note.
         patcher = unittest.mock.patch.object(widget.sound, "play")
         self.played = patcher.start()
         self.addCleanup(patcher.stop)
+        # Nor to throw glyphs. Every turn below runs with Patrik mode on, since
+        # that is what the sound now hangs off, and the visible half would put a
+        # transparent always-on-top window on the screen of whoever is running
+        # the suite. What it draws is tests/test_patrik.py's question, not this
+        # file's.
+        glyphs = unittest.mock.patch.object(self.window, "celebrate")
+        self.celebrated = glyphs.start()
+        self.addCleanup(glyphs.stop)
 
     def turn(self, turn_usd=0.25, session_usd=1.0):
         self._turns = getattr(self, "_turns", 0) + 1
@@ -364,6 +374,17 @@ class PanelTest(TempHome):
 
     def played_file(self):
         return os.path.basename(str(self.played.call_args.args[0]))
+
+    def ask_for_sound(self):
+        """Both switches, which is what a user who wants the noise ends up with.
+
+        The sound is the audible half of Patrik mode rather than a mode of its
+        own, so a panel with only `SOUND_KEY` set is silent. Named rather than
+        written out at the top of every test below, so that the pair does not
+        read as an assertion about which of the two is doing the work.
+        """
+        self.window.set_patrik(True)
+        self.window.set_sound(True)
 
 
 @unittest.skipUnless(HAS_DISPLAY, "no display")
@@ -423,7 +444,7 @@ class SoundToggleTest(PanelTest):
 @unittest.skipUnless(HAS_DISPLAY, "no display")
 class SoundOnTurnTest(PanelTest):
     def test_a_new_turn_plays_once(self):
-        self.window.set_sound(True)
+        self.ask_for_sound()
         self.turn()
         self.assertEqual(self.played.call_count, 1)
 
@@ -434,7 +455,7 @@ class SoundOnTurnTest(PanelTest):
     def test_the_turns_own_cost_picks_the_file(self):
         # The session is held at a dollar throughout, so nothing here can pass
         # by reading the wrong figure and getting lucky.
-        self.window.set_sound(True)
+        self.ask_for_sound()
         for turn_usd, expected in ((1.0, "under-10.wav"),
                                    (10.0, "over-10.wav"),
                                    (20.0, "over-20.wav"),
@@ -452,7 +473,7 @@ class SoundOnTurnTest(PanelTest):
         still wired to the session would sound perfectly reasonable all day --
         it only ever gets louder -- and would be caught by nothing else here.
         """
-        self.window.set_sound(True)
+        self.ask_for_sound()
         self.turn(turn_usd=0.25, session_usd=500.0)
         self.assertEqual(self.played_file(), "under-10.wav")
         self.turn(turn_usd=30.0, session_usd=0.5)
@@ -465,21 +486,21 @@ class SoundOnTurnTest(PanelTest):
         re-read a state.json that has not changed. A sound on any of those would
         be a panel beeping at somebody every minute all day.
         """
-        self.window.set_sound(True)
+        self.ask_for_sound()
         self.turn()
         self.played.reset_mock()
         self.window.refresh()
         self.played.assert_not_called()
 
     def test_switching_it_on_does_not_play_by_itself(self):
-        self.window.set_sound(True)
+        self.ask_for_sound()
         self.played.assert_not_called()
 
     def test_the_panel_opening_does_not_play(self):
         # Auto-launch opens a panel at every session start, and the figure
         # already on disk has not just been charged. Same trap the glyphs and
         # the counting rows each document.
-        self.window.set_sound(True)
+        self.ask_for_sound()
         store.write_json_atomic(paths.state_path(),
                                 a_state(time.time() - 1))
         third = widget.CostMeter()
@@ -487,18 +508,32 @@ class SoundOnTurnTest(PanelTest):
         self.addCleanup(third.destroy)
         self.played.assert_not_called()
 
-    def test_it_does_not_need_patrik_mode(self):
-        """Two toggles, two decisions: a sound in an open-plan office is not the
-        same question as an animation on your own screen."""
+    def test_patrik_mode_off_is_silent_however_the_sound_is_set(self):
+        """The mode is the master switch; the sound is a half of it.
+
+        A noise with no glyphs to account for it comes from a mode the user has
+        switched off and a menu entry that reads as switched off, so there is
+        nothing on screen that would explain it or say how to stop it.
+        """
         self.window.set_sound(True)
         self.window.set_patrik(False)
+        self.turn()
+        self.played.assert_not_called()
+
+    def test_the_sound_survives_the_mode_going_off_and_on(self):
+        """Silenced, not forgotten: the preference is still there to come back
+        to, so a person who muted the room for an afternoon is not made to find
+        the menu entry twice."""
+        self.ask_for_sound()
+        self.window.set_patrik(False)
+        self.turn()
+        self.played.assert_not_called()
+        self.window.set_patrik(True)
         self.turn()
         self.assertEqual(self.played.call_count, 1)
 
     def test_patrik_mode_alone_makes_no_noise(self):
         self.window.set_patrik(True)
-        self.addCleanup(self.window.update_config,
-                        lambda c: c.pop(widget.PATRIK_KEY, None))
         self.turn()
         self.played.assert_not_called()
 
