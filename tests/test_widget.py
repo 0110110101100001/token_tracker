@@ -22,7 +22,7 @@ import sys
 import time
 import unittest
 import unittest.mock
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import widget
 from tests.support import TempHome
@@ -1113,6 +1113,18 @@ class LimitRowsOnThePanelTest(TempHome):
         self.assertTrue(self.window.scoped_value.get_style_context()
                         .has_class("muted"))
 
+    def reset_in(self, days):
+        """A reset time `days` ahead of now, as the server would send it.
+
+        Relative rather than a fixed date, because these rows treat a reset
+        that has passed as an expired window and draw it differently -- a
+        literal date here was correct until the day it came round, and then
+        every test on it failed at once. Whole seconds, so that the row and the
+        tooltip format the same instant.
+        """
+        when = datetime.now().astimezone() + timedelta(days=days)
+        return when.replace(microsecond=0).isoformat()
+
     def week_resetting(self, iso):
         """The two unscoped figures, with a reset time on the weekly one."""
         return [{"kind": "session", "percent": 12, "severity": "normal",
@@ -1124,7 +1136,7 @@ class LimitRowsOnThePanelTest(TempHome):
         # What the server actually sends at nought: a scoped entry with no
         # resets_at beside a weekly one that has one. The row said nothing about
         # when it turns over, while the panel had the answer a row below.
-        iso = datetime(2026, 9, 5, 3, 0, 0).astimezone().isoformat()
+        iso = self.reset_in(days=2)
         self.draw(self.week_resetting(iso) + [self.scoped(pct=0)])
         # Read off the week's own row rather than spelt out: the reset renders
         # as a local weekday and this suite must not depend on the machine's
@@ -1134,14 +1146,14 @@ class LimitRowsOnThePanelTest(TempHome):
                          "≈0 % · " + tail)
 
     def test_a_borrowed_reset_is_named_as_such_in_the_tooltip(self):
-        iso = datetime(2026, 9, 5, 3, 0, 0).astimezone().isoformat()
+        iso = self.reset_in(days=2)
         self.draw(self.week_resetting(iso) + [self.scoped(pct=0)])
         self.assertIn("resets with the week",
                       self.window.scoped_value.get_tooltip_text())
 
     def test_the_scoped_rows_own_reset_is_not_overwritten(self):
-        own = datetime(2026, 9, 7, 3, 0, 0).astimezone().isoformat()
-        week = datetime(2026, 9, 5, 3, 0, 0).astimezone().isoformat()
+        own = self.reset_in(days=4)
+        week = self.reset_in(days=2)
         self.draw(self.week_resetting(week) + [self.scoped(pct=15, resets_at=own)])
         self.assertNotEqual(self.window.scoped_value.get_text(),
                             self.window.window_7d.get_text())

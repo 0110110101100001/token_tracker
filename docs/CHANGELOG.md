@@ -22,6 +22,7 @@ What changed in each release. Versions before 2.0 are in their tag messages:
 - Glyphs near a screen edge started up to a full margin away from the panel,
   because the window manager had moved the overlay out of the position it asked
   for.
+- Two panel tests carried a literal reset date and failed once it passed.
 
 ### Changed
 
