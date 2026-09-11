@@ -23,9 +23,16 @@ What changed in each release. Versions before 2.0 are in their tag messages:
   because the window manager had moved the overlay out of the position it asked
   for.
 - Two panel tests carried a literal reset date and failed once it passed.
+- `claude-fable-5-1` was missing from `pricing.json`, so every turn on it was
+  excluded from the totals: the turn and session rows read zero and the day
+  and week rows counted only older models. The entry is in, with Fable 5.1's
+  own cache-read rate.
 
 ### Changed
 
 - `claude-sonnet-5` stays at $2.00 / $10.00 in `pricing.json`. The introductory
   rate became the standard price and the increase due on 2026-09-01 was
   cancelled.
+- A `pricing.json` entry may carry a `cache_read` rate of its own; without one
+  the read stays a tenth of the input rate. See
+  [Pricing](METERING.md#pricing).

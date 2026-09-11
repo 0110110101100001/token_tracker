@@ -215,6 +215,13 @@ the same rule the **session** row already follows.
 million tokens (input and output) for each model you use. Edit it directly
 whenever Anthropic changes its rates.
 
+Cache writes and reads are derived from the input rate: a 5-minute write costs
+1.25x input, a 1-hour write 2x, and a read 0.1x. An entry can override the
+read with its own `cache_read` rate per million tokens, which is there for
+Fable 5.1: its published cache-read price is $0.25 against a $10 input rate,
+a fortieth rather than a tenth, and a session that is mostly cache reads would
+otherwise be overcounted four times over on that model.
+
 No rate in that table has a known expiry date. `claude-sonnet-5` used to
 carry one: $2.00 / $10.00 was announced at launch as an **introductory** rate
 through 2026-08-31, with a rise to $3.00 / $15.00 scheduled for 2026-09-01.

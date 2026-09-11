@@ -31,16 +31,27 @@ def price_event(
     cache_write_1h,
     cache_read,
 ):
-    """Return the USD cost of one assistant message."""
+    """Return the USD cost of one assistant message.
+
+    Cache reads are a tenth of the input rate unless the model's entry names
+    its own `cache_read` rate per million tokens. The tenth is what every model
+    charged until Fable 5.1, which publishes cache reads at $0.25 per million
+    against a $10 input rate; one multiplier for all of them would overcharge
+    that model's reads four times over, and reads are most of a long session.
+    """
     rates = pricing.get(model)
     if rates is None:
         raise UnknownModel(model)
     per_input = rates["input"] / TOKENS_PER_UNIT
     per_output = rates["output"] / TOKENS_PER_UNIT
+    per_cache_read = (
+        rates["cache_read"] / TOKENS_PER_UNIT if "cache_read" in rates
+        else per_input * CACHE_READ_MULTIPLIER
+    )
     return (
         input_tokens * per_input
         + output_tokens * per_output
         + cache_write_5m * per_input * CACHE_WRITE_5M_MULTIPLIER
         + cache_write_1h * per_input * CACHE_WRITE_1H_MULTIPLIER
-        + cache_read * per_input * CACHE_READ_MULTIPLIER
+        + cache_read * per_cache_read
     )
