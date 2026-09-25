@@ -27,6 +27,9 @@ What changed in each release. Versions before 2.0 are in their tag messages:
   excluded from the totals: the turn and session rows read zero and the day
   and week rows counted only older models. The entry is in, with Fable 5.1's
   own cache-read rate.
+- `claude-opus-5-5` was missing from `pricing.json` in the same way, with the
+  same result. Its entry is in at $4 / $20 per million, with its own
+  `cache_read` rate of $0.20: a twentieth of input, not the usual tenth.
 
 ### Changed
 
