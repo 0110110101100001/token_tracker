@@ -1,6 +1,7 @@
 # tests/test_pricing.py
 import unittest
-from cost_meter.pricing import UnknownModel, price_event
+from cost_meter import paths
+from cost_meter.pricing import UnknownModel, load_pricing, price_event
 
 PRICING = {
     "claude-opus-5": {"input": 5.0, "output": 25.0},
@@ -42,6 +43,20 @@ class TestPriceEvent(unittest.TestCase):
         with self.assertRaises(UnknownModel) as ctx:
             price_event(PRICING, "claude-nonexistent-9", 100, 100, 0, 0, 0)
         self.assertEqual(ctx.exception.model, "claude-nonexistent-9")
+
+
+class TestShippedTable(unittest.TestCase):
+    """The real pricing.json, which is where a missing model actually goes wrong."""
+
+    def setUp(self):
+        self.pricing = load_pricing(paths.pricing_path())
+
+    def test_opus_5_5_is_priced(self):
+        # $4 / $20 per million, cache reads at $0.20 -- a twentieth of input,
+        # so the entry needs its own `cache_read`; the tenth would read $0.40.
+        usd = price_event(self.pricing, "claude-opus-5-5", 1_000_000, 1_000_000,
+                          0, 0, 1_000_000)
+        self.assertAlmostEqual(usd, 4.0 + 20.0 + 0.2)
 
 
 if __name__ == "__main__":
