@@ -220,7 +220,9 @@ Cache writes and reads are derived from the input rate: a 5-minute write costs
 read with its own `cache_read` rate per million tokens, which is there for
 Fable 5.1: its published cache-read price is $0.25 against a $10 input rate,
 a fortieth rather than a tenth, and a session that is mostly cache reads would
-otherwise be overcounted four times over on that model.
+otherwise be overcounted four times over on that model. Opus 5.5 uses it too:
+cache reads at $0.20 against a $4 input rate, a twentieth, which the tenth
+would count twice over.
 
 No rate in that table has a known expiry date. `claude-sonnet-5` used to
 carry one: $2.00 / $10.00 was announced at launch as an **introductory** rate

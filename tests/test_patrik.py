@@ -982,6 +982,34 @@ class ShakeWiringTest(PanelTest):
         self.window.set_patrik(False)
         self.assertEqual(tuple(self.window.get_position()), before)
 
+    def test_a_drag_during_the_shake_wins_over_it(self):
+        """The user takes the panel elsewhere mid-wobble, and it stays there.
+
+        Every frame of the shake moves the window to its base plus an offset, so
+        a drag that lands inside the burst is undone sixteen milliseconds later,
+        and `end_patrik` then seats the panel on the base -- exactly where the
+        user just moved it away from. Seen live: a turn landing while the panel
+        was being dragged put it straight back, and the debounce recorded the
+        old spot as the one chosen.
+
+        The shake is a decoration and the drag is an instruction, so the shake
+        yields: once the window is found somewhere the wobble did not put it,
+        the wobble stops for the rest of that burst and the drop point is what
+        gets recorded.
+        """
+        self.window.set_patrik(True)
+        self.turn()
+        self.tick()
+        self.window.move(700, 500)
+        self.window.user_positioned = True
+        self.window._anchor = None
+        chosen = tuple(self.window.get_position())
+        self.assertTrue(self.drive(), "the burst never finished")
+        self.assertEqual(tuple(self.window.get_position()), chosen)
+        self.window._persist_position()
+        self.assertEqual(tuple(self.config().get("widget_position") or ()),
+                         chosen)
+
     def test_the_wobble_never_strays_further_than_its_amplitude(self):
         """Every offset is measured from the base, not from the last frame.
 

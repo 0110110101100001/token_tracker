@@ -1,7 +1,21 @@
 # Changelog
 
-What changed in each release. Versions before 2.0 are in their tag messages:
-`git tag -n50`.
+
+
+## 3.0
+
+### Added
+
+- A header at the top of the panel: the Anthropic mark, in its terracotta,
+  and the word `claude` beside it.
+- `pixi run kill` stops the running panel, and `pixi run resurrect` stops it and opens a fresh one. 
+### Fixed
+
+- Dragging the panel during a celebration no longer gets undone. 
+### Changed
+
+- `claude-opus-5-5` is included in pricing at $4 / $20 per million tokens,
+  with cache reads at $0.20, so Opus 5.5 turns are counted and resolved.
 
 ## 2.0
 
@@ -27,6 +41,9 @@ What changed in each release. Versions before 2.0 are in their tag messages:
   excluded from the totals: the turn and session rows read zero and the day
   and week rows counted only older models. The entry is in, with Fable 5.1's
   own cache-read rate.
+- `claude-opus-5-5` was missing from `pricing.json` in the same way, with the
+  same result. Its entry is in at $4 / $20 per million, with its own
+  `cache_read` rate of $0.20: a twentieth of input, not the usual tenth.
 
 ### Changed
 

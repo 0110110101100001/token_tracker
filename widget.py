@@ -28,6 +28,16 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import (Gdk, Gio, GLib, Gtk, Pango,  # noqa: E402
                            PangoCairo)
 
+# The brand mark is SVG, so it is drawn rather than pasted: one shape that
+# stays sharp at every scale the panel can be dragged to. librsvg ships with
+# the environment, but the panel is worth more than its header, so a missing
+# typelib costs the mark and nothing else -- see Logo.on_draw.
+try:
+    gi.require_version("Rsvg", "2.0")
+    from gi.repository import Rsvg
+except (ImportError, ValueError):  # pragma: no cover - environment dependent
+    Rsvg = None
+
 from cost_meter import (autolaunch, log, patrik, paths, roll, sound,  # noqa: E402
                         store, summary, usage_api, utilization)
 
@@ -170,6 +180,36 @@ BORDER = 10
 ROW_SPACING = 3
 COLUMN_SPACING = 12
 
+# The header: the Anthropic mark and the word beside it. It is what tells
+# this panel from the codex one when both sit on a screen, since below the
+# header they are the same dark table. The word is larger than the value rows
+# because it is a heading and has to read as one; the mark is sized to the
+# word's cap height and a little over, so the two sit as one line rather than
+# a glyph and a footnote.
+BRAND = "claude"
+BRAND_FONT_PX = 13
+LOGO_PX = 15
+BRAND_SPACING = 7
+
+# The mark is Anthropic's "A", not Claude's sunburst: two bold strokes that
+# still read as a letter at the fifteen pixels the header gives them, where
+# the sunburst's thin rays collapse into a smudge nobody can name. It is drawn
+# in Anthropic's terracotta, the one thing on the panel that is not a shade of
+# grey -- the codex panel draws its mark in the label grey, so colour is what
+# tells them apart at a glance. Written into the SVG rather than the
+# stylesheet: CSS reaches labels and windows, not a shape rendered by librsvg,
+# and the Simple Icons path ships without a fill, which renders black and so
+# invisible here.
+LOGO_COLOUR = "#d97757"
+ANTHROPIC_LOGO_SVG = (
+    '<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">'
+    '<title>Anthropic</title><path fill="{colour}" d="'
+    "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442"
+    "l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712"
+    " 10.2232 2.2914-5.9456 2.2914 5.9456Z"
+    '"/></svg>'
+).format(colour=LOGO_COLOUR).encode("utf-8")
+
 # Colours and the font family live here; the font *size* deliberately does not.
 # Reloading a CssProvider that is already on the screen updates what the style
 # context reports and re-lays out nothing: the label keeps the layout it built
@@ -190,6 +230,7 @@ CSS = b"""
 window { background-color: #1e1e22; }
 label { color: #d8d8dc; font-family: monospace; }
 label.value { font-weight: bold; }
+label.brand { color: #ffffff; font-weight: bold; }
 label.muted { color: #8a8a92; }
 label.green { color: #78d178; }
 label.amber { color: #e3b341; }
@@ -212,6 +253,16 @@ def warn_px(scale):
     survives the smallest scale instead of rounding shut.
     """
     return round(WARN_FONT_PX * scale)
+
+
+def brand_px(scale):
+    """The header word's size: a heading over the value rows at every scale."""
+    return round(BRAND_FONT_PX * scale)
+
+
+def logo_px(scale):
+    """The mark's side, in device pixels, at `scale`."""
+    return round(LOGO_PX * scale)
 
 
 def font_attrs(px):
@@ -616,6 +667,46 @@ def _captioned_row(grid, index, caption, labels):
     return left, right
 
 
+class Logo(Gtk.DrawingArea):
+    """The Anthropic mark, redrawn from its outline at whatever size it is given.
+
+    A drawing area rather than a Gtk.Image, because the panel is resized by
+    dragging and a bitmap scaled by a third of a pixel per frame reads as a
+    smudge. The size is requested rather than filled, so the header row is as
+    tall as the mark and the grid keeps deciding the rest.
+    """
+
+    def __init__(self, size):
+        super().__init__()
+        self.handle = None
+        if Rsvg is not None:
+            try:
+                self.handle = Rsvg.Handle.new_from_data(ANTHROPIC_LOGO_SVG)
+            except GLib.Error:
+                self.handle = None
+        self.size = size
+        self.set_size_request(size, size)
+        self.set_valign(Gtk.Align.CENTER)
+        self.connect("draw", self.on_draw)
+
+    def set_size(self, size):
+        if size == self.size:
+            return
+        self.size = size
+        self.set_size_request(size, size)
+
+    def on_draw(self, _widget, context):
+        if self.handle is None:
+            return False  # no librsvg here; the word beside it still says claude
+        allocation = self.get_allocation()
+        box = Rsvg.Rectangle()
+        box.x = (allocation.width - self.size) / 2
+        box.y = (allocation.height - self.size) / 2
+        box.width = box.height = float(self.size)
+        self.handle.render_document(context, box)
+        return True
+
+
 class PatrikOverlay(Gtk.Window):
     """The transparent window the money glyphs are drawn in.
 
@@ -822,11 +913,26 @@ class CostMeter(Gtk.Window):
         # because a caption that stayed 11 px while its value grew would look
         # like a rendering fault rather than a missing line of code.
         self.labels = []
-        self.last_turn = _row(grid, 0, "last turn", self.labels)
-        self.session = _row(grid, 1, "session", self.labels)
-        self.today = _row(grid, 2, "today", self.labels)
-        grid.attach(Gtk.Separator(), 0, 3, 2, 1)
-        self.window_5h = _row(grid, 4, "5h window", self.labels)
+
+        # Rows 0 and 1: the header and its separator. The mark and the word
+        # share one box rather than the grid's two columns, because the word
+        # belongs beside the mark at the mark's spacing, not out at the value
+        # column. Every row index below is literal and moved down two when this
+        # went in; the warning row's comment says why they are literal.
+        self.logo = Logo(logo_px(self.scale))
+        self.brand = Gtk.Label(label=BRAND, xalign=0.0)
+        self.brand.get_style_context().add_class("brand")
+        self.header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.header.pack_start(self.logo, False, False, 0)
+        self.header.pack_start(self.brand, False, False, 0)
+        grid.attach(self.header, 0, 0, 2, 1)
+        grid.attach(Gtk.Separator(), 0, 1, 2, 1)
+
+        self.last_turn = _row(grid, 2, "last turn", self.labels)
+        self.session = _row(grid, 3, "session", self.labels)
+        self.today = _row(grid, 4, "today", self.labels)
+        grid.attach(Gtk.Separator(), 0, 5, 2, 1)
+        self.window_5h = _row(grid, 6, "5h window", self.labels)
         # Directly under the 5h window, because it is the same kind of claim --
         # the account's share of a limit -- and because the week and the machine
         # dollars below it are a pair that must not be split. Its caption is
@@ -834,19 +940,19 @@ class CostMeter(Gtk.Window):
         # model the figure names, and `fable` is what a row with no scope on it
         # yet is left reading. See scoped_caption.
         self.scoped_name, self.scoped_value = _captioned_row(
-            grid, 5, "fable", self.labels)
-        self.window_7d = _row(grid, 6, "week", self.labels)
+            grid, 7, "fable", self.labels)
+        self.window_7d = _row(grid, 8, "week", self.labels)
         # Directly under the percentage it belongs to, because the two describe
         # the same seven days by different measures: the account's share of its
         # limit, and what this installation put into it. Adjacency is what says
         # they are one window; a caption naming the machine is what stops the
         # dollars being read as the account's.
-        self.week_local = _row(grid, 7, "this machine", self.labels)
+        self.week_local = _row(grid, 9, "this machine", self.labels)
         # Below a separator of its own: everything above is a measured figure,
         # and this is the fact that says what those figures mean — money owed on
         # API billing, notional against a seat.
-        grid.attach(Gtk.Separator(), 0, 8, 2, 1)
-        self.billing = _row(grid, 9, "billing", self.labels)
+        grid.attach(Gtk.Separator(), 0, 10, 2, 1)
+        self.billing = _row(grid, 11, "billing", self.labels)
         # The rows made of state.json's dollars, and so the rows staleness mutes.
         # The three limit rows are deliberately absent — see set_stale: they come
         # from Claude Code's cache instead, and `muted` reaches them only through
@@ -907,15 +1013,20 @@ class CostMeter(Gtk.Window):
         # back to. Held rather than read per frame: read live it would drift by
         # whatever the last frame's offset was, and the panel would walk.
         self._patrik_base = None
+        # Where the last frame of the shake put the window. A window found
+        # anywhere else at the next frame was moved by the user, and the shake
+        # yields to that -- see `shake_to`.
+        self._shake_at = None
 
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
         self.warning.set_no_show_all(True)
-        # Row 10, below `billing` on row 9: the two once shared a row and GTK drew
-        # them on top of each other, so the red staleness note sat over the
+        # Row 12, below `billing` on row 11: the two once shared a row and GTK
+        # drew them on top of each other, so the red staleness note sat over the
         # billing text. Every row index here is literal, so a row added above has
-        # to push this one down with it -- the scoped row did exactly that.
-        grid.attach(self.warning, 0, 10, 2, 1)
+        # to push this one down with it -- the scoped row did exactly that, and
+        # the header did it again.
+        grid.attach(self.warning, 0, 12, 2, 1)
 
         # After every label exists, since this is what sizes them.
         self.apply_scale(self.scale)
@@ -996,6 +1107,9 @@ class CostMeter(Gtk.Window):
         for label in self.labels:
             label.set_attributes(attrs)
         self.warning.set_attributes(font_attrs(warn_px(self.scale)))
+        self.brand.set_attributes(font_attrs(brand_px(self.scale)))
+        self.logo.set_size(logo_px(self.scale))
+        self.header.set_spacing(round(BRAND_SPACING * self.scale))
         self.grid.set_border_width(round(BORDER * self.scale))
         self.grid.set_row_spacing(round(ROW_SPACING * self.scale))
         self.grid.set_column_spacing(round(COLUMN_SPACING * self.scale))
@@ -1836,6 +1950,7 @@ class CostMeter(Gtk.Window):
         # accumulate into the panel walking across the screen.
         if self._patrik_base is None:
             self._patrik_base = tuple(self.get_position())
+            self._shake_at = None
         self._patrik_began = time.monotonic()
         self._patrik_frame = self._patrik_began
         if self._patrik_source is None:
@@ -1896,12 +2011,37 @@ class CostMeter(Gtk.Window):
         one. Setting `_anchor` to the base for the duration was tried first and
         does nothing: `at_anchor()` is consulted when the debounce fires, and by
         then the window is back on its base whatever the anchor says.
+
+        A drag wins over the shake. Every frame here puts the window at the base
+        plus an offset, so a drag landing inside a burst was undone sixteen
+        milliseconds later and `end_patrik` then seated the panel back on the
+        base -- the spot the user had just moved it away from, and the one the
+        debounce went on to record. Seen live: a turn landing mid-drag put the
+        panel straight back where it was. So the window is checked against
+        where the previous frame left it, and if it has been taken further than
+        the wobble itself could have moved it, the shake stops for the rest of
+        this burst and the base is dropped, which leaves the drag alone and
+        lets `_persist_position` record the drop point rather than wait.
+
+        Further than the amplitude, rather than anywhere else at all, because
+        a window manager clamping the shake at a screen edge also leaves the
+        window off the spot it was asked for -- by at most the amplitude. A
+        drag is dozens of pixels; a clamp never is.
         """
         if self._patrik_base is None:
             return
+        if self._shake_at is not None:
+            x, y = self.get_position()
+            at_x, at_y = self._shake_at
+            if (abs(x - at_x) > patrik.SHAKE_AMPLITUDE
+                    or abs(y - at_y) > patrik.SHAKE_AMPLITUDE):
+                self._patrik_base = None
+                self._shake_at = None
+                return
         base_x, base_y = self._patrik_base
         dx, dy = self.shake.offset(progress)
-        self.move(base_x + dx, base_y + dy)
+        self._shake_at = (base_x + dx, base_y + dy)
+        self.move(*self._shake_at)
 
     def end_patrik(self):
         """Stop the burst, land the window, and take the overlay down.
@@ -1922,6 +2062,7 @@ class CostMeter(Gtk.Window):
             # pixels out is a position the next debounce will record and keep.
             self.move(*self._patrik_base)
             self._patrik_base = None
+        self._shake_at = None
         self.swarm = patrik.Swarm()
         if self.overlay is not None:
             self.overlay.destroy()

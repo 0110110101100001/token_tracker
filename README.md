@@ -174,6 +174,15 @@ leaves the flag alone, and detaches, so the panel outlives the shell you typed
 it in. The other ways to start and stop one by hand are under
 [Starting and stopping](docs/REFERENCE.md#starting-and-stopping).
 
+**If a panel insists it is running and you cannot see it** — `pixi run start`
+answers `launch: already running (pid N)` and nothing appears — the window is
+off-screen or wedged, and there is no menu to close it from:
+
+```bash
+pixi run kill         # stop it
+pixi run resurrect    # stop it and open a fresh one
+```
+
 ## Uninstall
 
 ```bash
