@@ -11,7 +11,7 @@ figures *mean* is in [What it counts, and how](METERING.md).
 The panel is a small borderless window anchored to the bottom-right corner of
 your screen. It shows these rows:
 
-- **header** — the Claude mark and the word `claude`. Below it the panel is
+- **header** — the Anthropic mark and the word `claude`. Below it the panel is
   the same dark table as the codex one, so the header is what tells the two
   apart on one screen: the mark is drawn in Anthropic's terracotta, the codex
   mark in the label grey. It is SVG rendered by librsvg, so it stays sharp at
@@ -163,7 +163,8 @@ finish counting up around halfway through the glyphs and the two read as one
 event. The panel's flinch takes the first 40 % of whatever that length is, and
 wobbles at the same speed however long it runs — stretched to a fixed number of
 cycles it would become a slow sway, which reads as the panel leaning about rather
-than reacting.
+than reacting. Dragging the panel while it flinches wins: the flinch stops for the
+rest of that celebration and the panel stays where you drop it.
 
 Glyphs keep arriving for the whole of it, not just at the start: a handful lands
 the instant the turn does, and about nine a second follow, so roughly 28 glyphs

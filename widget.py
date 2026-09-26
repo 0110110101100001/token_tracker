@@ -180,54 +180,33 @@ BORDER = 10
 ROW_SPACING = 3
 COLUMN_SPACING = 12
 
-# The header: the Claude mark and the word beside it. It is what tells this
-# panel from the codex one when both sit on a screen, since below the header
-# they are the same dark table. The word is larger than the value rows because
-# it is a heading and has to read as one; the mark is sized to the word's cap
-# height and a little over, so the two sit as one line rather than a glyph and
-# a footnote.
+# The header: the Anthropic mark and the word beside it. It is what tells
+# this panel from the codex one when both sit on a screen, since below the
+# header they are the same dark table. The word is larger than the value rows
+# because it is a heading and has to read as one; the mark is sized to the
+# word's cap height and a little over, so the two sit as one line rather than
+# a glyph and a footnote.
 BRAND = "claude"
 BRAND_FONT_PX = 13
 LOGO_PX = 15
 BRAND_SPACING = 7
 
-# Anthropic's terracotta, which is the colour the mark is drawn in everywhere
-# else and the one thing on the panel that is not a shade of grey -- the codex
-# panel draws its mark in the label grey, so colour is what tells them apart
-# at a glance. Written into the SVG rather than the stylesheet: CSS reaches
-# labels and windows, not a shape rendered by librsvg, and the Simple Icons
-# path ships without a fill, which renders black and so invisible here.
+# The mark is Anthropic's "A", not Claude's sunburst: two bold strokes that
+# still read as a letter at the fifteen pixels the header gives them, where
+# the sunburst's thin rays collapse into a smudge nobody can name. It is drawn
+# in Anthropic's terracotta, the one thing on the panel that is not a shade of
+# grey -- the codex panel draws its mark in the label grey, so colour is what
+# tells them apart at a glance. Written into the SVG rather than the
+# stylesheet: CSS reaches labels and windows, not a shape rendered by librsvg,
+# and the Simple Icons path ships without a fill, which renders black and so
+# invisible here.
 LOGO_COLOUR = "#d97757"
-CLAUDE_LOGO_SVG = (
+ANTHROPIC_LOGO_SVG = (
     '<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">'
-    '<title>Claude</title><path fill="{colour}" d="'
-    "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486"
-    "-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-."
-    "3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972"
-    "2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.5"
-    "5-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225."
-    "8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.145"
-    "7-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-."
-    "17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997"
-    "0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.898"
-    "5.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0"
-    "789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853"
-    "1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053"
-    "1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34"
-    "1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893"
-    "1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3"
-    "886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304."
-    "0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-."
-    "079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.109"
-    "3l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-."
-    "0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436"
-    "3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38"
-    "17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.607"
-    "1-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-."
-    "6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243"
-    "1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357"
-    "1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385"
-    "4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"
+    '<title>Anthropic</title><path fill="{colour}" d="'
+    "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442"
+    "l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712"
+    " 10.2232 2.2914-5.9456 2.2914 5.9456Z"
     '"/></svg>'
 ).format(colour=LOGO_COLOUR).encode("utf-8")
 
@@ -689,7 +668,7 @@ def _captioned_row(grid, index, caption, labels):
 
 
 class Logo(Gtk.DrawingArea):
-    """The Claude mark, redrawn from its outline at whatever size it is given.
+    """The Anthropic mark, redrawn from its outline at whatever size it is given.
 
     A drawing area rather than a Gtk.Image, because the panel is resized by
     dragging and a bitmap scaled by a third of a pixel per frame reads as a
@@ -702,7 +681,7 @@ class Logo(Gtk.DrawingArea):
         self.handle = None
         if Rsvg is not None:
             try:
-                self.handle = Rsvg.Handle.new_from_data(CLAUDE_LOGO_SVG)
+                self.handle = Rsvg.Handle.new_from_data(ANTHROPIC_LOGO_SVG)
             except GLib.Error:
                 self.handle = None
         self.size = size
@@ -1034,6 +1013,10 @@ class CostMeter(Gtk.Window):
         # back to. Held rather than read per frame: read live it would drift by
         # whatever the last frame's offset was, and the panel would walk.
         self._patrik_base = None
+        # Where the last frame of the shake put the window. A window found
+        # anywhere else at the next frame was moved by the user, and the shake
+        # yields to that -- see `shake_to`.
+        self._shake_at = None
 
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
@@ -1967,6 +1950,7 @@ class CostMeter(Gtk.Window):
         # accumulate into the panel walking across the screen.
         if self._patrik_base is None:
             self._patrik_base = tuple(self.get_position())
+            self._shake_at = None
         self._patrik_began = time.monotonic()
         self._patrik_frame = self._patrik_began
         if self._patrik_source is None:
@@ -2027,12 +2011,37 @@ class CostMeter(Gtk.Window):
         one. Setting `_anchor` to the base for the duration was tried first and
         does nothing: `at_anchor()` is consulted when the debounce fires, and by
         then the window is back on its base whatever the anchor says.
+
+        A drag wins over the shake. Every frame here puts the window at the base
+        plus an offset, so a drag landing inside a burst was undone sixteen
+        milliseconds later and `end_patrik` then seated the panel back on the
+        base -- the spot the user had just moved it away from, and the one the
+        debounce went on to record. Seen live: a turn landing mid-drag put the
+        panel straight back where it was. So the window is checked against
+        where the previous frame left it, and if it has been taken further than
+        the wobble itself could have moved it, the shake stops for the rest of
+        this burst and the base is dropped, which leaves the drag alone and
+        lets `_persist_position` record the drop point rather than wait.
+
+        Further than the amplitude, rather than anywhere else at all, because
+        a window manager clamping the shake at a screen edge also leaves the
+        window off the spot it was asked for -- by at most the amplitude. A
+        drag is dozens of pixels; a clamp never is.
         """
         if self._patrik_base is None:
             return
+        if self._shake_at is not None:
+            x, y = self.get_position()
+            at_x, at_y = self._shake_at
+            if (abs(x - at_x) > patrik.SHAKE_AMPLITUDE
+                    or abs(y - at_y) > patrik.SHAKE_AMPLITUDE):
+                self._patrik_base = None
+                self._shake_at = None
+                return
         base_x, base_y = self._patrik_base
         dx, dy = self.shake.offset(progress)
-        self.move(base_x + dx, base_y + dy)
+        self._shake_at = (base_x + dx, base_y + dy)
+        self.move(*self._shake_at)
 
     def end_patrik(self):
         """Stop the burst, land the window, and take the overlay down.
@@ -2053,6 +2062,7 @@ class CostMeter(Gtk.Window):
             # pixels out is a position the next debounce will record and keep.
             self.move(*self._patrik_base)
             self._patrik_base = None
+        self._shake_at = None
         self.swarm = patrik.Swarm()
         if self.overlay is not None:
             self.overlay.destroy()

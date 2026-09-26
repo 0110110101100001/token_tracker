@@ -8,8 +8,8 @@
 
 [workspace]
 name = "token-calculator"
-# Kept in step with the release tags: v2.0 is this.
-version = "2.0"
+# Kept in step with the release tags.
+version = "3.0"
 description = "Always-on-top GTK panel showing what Claude Code work costs"
 channels = ["conda-forge"]
 # One lock file covers both platforms; pixi solves them together. Adding
@@ -89,6 +89,22 @@ launch = "python -m cost_meter.launch"
 #
 # This is the one to reach for by hand, so it has the name a hand reaches for.
 start = "python -m cost_meter.launch --force"
+
+# Stop the running panel. For the one the right-click menu cannot reach: a panel
+# that holds widget.lock -- so every session logs `launch: already running` and
+# opens nothing -- while its window is nowhere on screen.
+#
+# It checks what it is about to signal rather than trusting data/widget.pid, and
+# proves the panel is gone by the lock coming free rather than by the signal
+# having been sent. Both are why this is a task and not the two by-hand lines
+# docs/REFERENCE.md used to carry.
+kill = "python -m cost_meter.kill"
+
+# The same thing, then a fresh panel: what `kill` followed by `start` would be,
+# except that the launch happens in the same process and only after the lock is
+# actually free. Two tasks chained by hand would race that gap, and a launch
+# that loses it stands down and leaves the user with no panel at all.
+resurrect = "python -m cost_meter.kill --restart"
 
 # The name this task had until 2026-08-14, kept as an alias rather than deleted:
 # it is in the README's history and in a plan under docs/, and a command that

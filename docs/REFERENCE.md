@@ -115,16 +115,30 @@ the session: the running panel holds `data/widget.lock`, and the launcher starts
 one only when it can take that lock itself. See
 [The lock](PANEL.md#the-lock-that-keeps-a-closed-panel-closed).
 
-`data/widget.pid` is still written, now purely so a stuck panel can be found. If
-you ever need to kill it from a shell, use that file rather than matching on the
-process name:
+When the menu cannot be reached — the panel holds the lock, so every session
+logs `launch: already running (pid N)` and opens nothing, but the window is
+nowhere on screen — stop it from a shell instead:
 
 ```bash
-kill "$(cat data/widget.pid)"                             # Linux
+pixi run kill         # stop the running panel
+pixi run resurrect    # stop it and open a fresh one
 ```
-```powershell
-Stop-Process -Id (Get-Content data\widget.pid).Trim()     # Windows
-```
+
+Both are the same command; `resurrect` adds `--restart`, which launches only
+after the lock has actually come free, so the new panel cannot lose a race
+against the old one on its way out. `resurrect` starts a panel even when there
+was none running, and neither task touches the auto-launch flag.
+
+`kill` does not simply signal what `data/widget.pid` says. That file is a
+diagnostic rather than a claim — a panel killed hard leaves it behind, and
+Windows reuses pid numbers — so the command checks that the pid still belongs to
+a process that could be the panel, and **refuses** rather than killing a stranger
+that inherited the number. It reports `kill: panel gone (pid N)` only once
+`data/widget.lock` is free, which is the same test the launcher applies. Every
+line it prints goes to `data/cost-meter.log` too, beside the launcher's.
+
+If it says the lock is held but the pid file cannot say by whom, find the process
+by hand: `pgrep -f widget.py` on Linux, Task Manager (`pythonw.exe`) on Windows.
 
 Force a recount without waiting for a turn to finish:
 

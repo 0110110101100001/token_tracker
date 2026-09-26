@@ -695,17 +695,23 @@ class HeaderTest(unittest.TestCase):
         self.Rsvg = Rsvg
 
     def test_the_mark_parses(self):
-        handle = self.Rsvg.Handle.new_from_data(widget.CLAUDE_LOGO_SVG)
+        handle = self.Rsvg.Handle.new_from_data(widget.ANTHROPIC_LOGO_SVG)
         self.assertIsNotNone(handle)
         # A square viewBox, so drawing it into a square box distorts nothing.
-        self.assertIn('viewBox="0 0 24 24"', widget.CLAUDE_LOGO_SVG.decode("utf-8"))
+        self.assertIn('viewBox="0 0 24 24"', widget.ANTHROPIC_LOGO_SVG.decode("utf-8"))
+
+    def test_the_mark_is_anthropics_letter(self):
+        # The "A", not Claude's sunburst: at the header's fifteen pixels the
+        # sunburst's rays smudge into nothing anyone can name.
+        svg = widget.ANTHROPIC_LOGO_SVG.decode("utf-8")
+        self.assertIn('d="M17.3041 3.541h-3.6718l6.696 16.918H24Z', svg)
 
     def test_the_mark_carries_its_own_colour(self):
         # Simple Icons paths ship without a fill and render black, which on the
         # panel's near-black background is no mark at all.
-        svg = widget.CLAUDE_LOGO_SVG.decode("utf-8")
+        svg = widget.ANTHROPIC_LOGO_SVG.decode("utf-8")
         self.assertIn(f'fill="{widget.LOGO_COLOUR}"', svg)
-        self.assertIn("<title>Claude</title>", svg)
+        self.assertIn("<title>Anthropic</title>", svg)
 
     def test_the_brand_word_names_the_panel(self):
         self.assertEqual(widget.BRAND, "claude")
