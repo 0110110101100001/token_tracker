@@ -1,17 +1,21 @@
 # Changelog
 
-What changed in each release. Versions before 2.0 are in their tag messages:
-`git tag -n50`.
 
-## Unreleased
+
+## 3.0
 
 ### Added
 
-- A header at the top of the panel: the Claude mark, in Anthropic's terracotta,
-  and the word `claude` beside it, as the codex panel carries the OpenAI mark
-  and `codex`. Below the header the two are the same dark table, so this is
-  what tells them apart on one screen. The mark is SVG rendered by librsvg and
-  scales with the rest of the panel. See [PANEL.md](PANEL.md).
+- A header at the top of the panel: the Anthropic mark, in its terracotta,
+  and the word `claude` beside it.
+- `pixi run kill` stops the running panel, and `pixi run resurrect` stops it and opens a fresh one. 
+### Fixed
+
+- Dragging the panel during a celebration no longer gets undone. 
+### Changed
+
+- `claude-opus-5-5` is included in pricing at $4 / $20 per million tokens,
+  with cache reads at $0.20, so Opus 5.5 turns are counted and resolved.
 
 ## 2.0
 
