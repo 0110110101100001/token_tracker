@@ -28,6 +28,16 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import (Gdk, Gio, GLib, Gtk, Pango,  # noqa: E402
                            PangoCairo)
 
+# The brand mark is SVG, so it is drawn rather than pasted: one shape that
+# stays sharp at every scale the panel can be dragged to. librsvg ships with
+# the environment, but the panel is worth more than its header, so a missing
+# typelib costs the mark and nothing else -- see Logo.on_draw.
+try:
+    gi.require_version("Rsvg", "2.0")
+    from gi.repository import Rsvg
+except (ImportError, ValueError):  # pragma: no cover - environment dependent
+    Rsvg = None
+
 from cost_meter import (autolaunch, log, patrik, paths, roll, sound,  # noqa: E402
                         store, summary, usage_api, utilization)
 
@@ -170,6 +180,57 @@ BORDER = 10
 ROW_SPACING = 3
 COLUMN_SPACING = 12
 
+# The header: the Claude mark and the word beside it. It is what tells this
+# panel from the codex one when both sit on a screen, since below the header
+# they are the same dark table. The word is larger than the value rows because
+# it is a heading and has to read as one; the mark is sized to the word's cap
+# height and a little over, so the two sit as one line rather than a glyph and
+# a footnote.
+BRAND = "claude"
+BRAND_FONT_PX = 13
+LOGO_PX = 15
+BRAND_SPACING = 7
+
+# Anthropic's terracotta, which is the colour the mark is drawn in everywhere
+# else and the one thing on the panel that is not a shade of grey -- the codex
+# panel draws its mark in the label grey, so colour is what tells them apart
+# at a glance. Written into the SVG rather than the stylesheet: CSS reaches
+# labels and windows, not a shape rendered by librsvg, and the Simple Icons
+# path ships without a fill, which renders black and so invisible here.
+LOGO_COLOUR = "#d97757"
+CLAUDE_LOGO_SVG = (
+    '<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">'
+    '<title>Claude</title><path fill="{colour}" d="'
+    "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486"
+    "-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-."
+    "3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972"
+    "2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.5"
+    "5-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225."
+    "8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.145"
+    "7-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-."
+    "17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997"
+    "0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.898"
+    "5.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0"
+    "789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853"
+    "1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053"
+    "1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34"
+    "1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893"
+    "1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3"
+    "886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304."
+    "0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-."
+    "079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.109"
+    "3l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-."
+    "0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436"
+    "3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38"
+    "17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.607"
+    "1-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-."
+    "6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243"
+    "1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357"
+    "1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385"
+    "4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"
+    '"/></svg>'
+).format(colour=LOGO_COLOUR).encode("utf-8")
+
 # Colours and the font family live here; the font *size* deliberately does not.
 # Reloading a CssProvider that is already on the screen updates what the style
 # context reports and re-lays out nothing: the label keeps the layout it built
@@ -190,6 +251,7 @@ CSS = b"""
 window { background-color: #1e1e22; }
 label { color: #d8d8dc; font-family: monospace; }
 label.value { font-weight: bold; }
+label.brand { color: #ffffff; font-weight: bold; }
 label.muted { color: #8a8a92; }
 label.green { color: #78d178; }
 label.amber { color: #e3b341; }
@@ -212,6 +274,16 @@ def warn_px(scale):
     survives the smallest scale instead of rounding shut.
     """
     return round(WARN_FONT_PX * scale)
+
+
+def brand_px(scale):
+    """The header word's size: a heading over the value rows at every scale."""
+    return round(BRAND_FONT_PX * scale)
+
+
+def logo_px(scale):
+    """The mark's side, in device pixels, at `scale`."""
+    return round(LOGO_PX * scale)
 
 
 def font_attrs(px):
@@ -616,6 +688,46 @@ def _captioned_row(grid, index, caption, labels):
     return left, right
 
 
+class Logo(Gtk.DrawingArea):
+    """The Claude mark, redrawn from its outline at whatever size it is given.
+
+    A drawing area rather than a Gtk.Image, because the panel is resized by
+    dragging and a bitmap scaled by a third of a pixel per frame reads as a
+    smudge. The size is requested rather than filled, so the header row is as
+    tall as the mark and the grid keeps deciding the rest.
+    """
+
+    def __init__(self, size):
+        super().__init__()
+        self.handle = None
+        if Rsvg is not None:
+            try:
+                self.handle = Rsvg.Handle.new_from_data(CLAUDE_LOGO_SVG)
+            except GLib.Error:
+                self.handle = None
+        self.size = size
+        self.set_size_request(size, size)
+        self.set_valign(Gtk.Align.CENTER)
+        self.connect("draw", self.on_draw)
+
+    def set_size(self, size):
+        if size == self.size:
+            return
+        self.size = size
+        self.set_size_request(size, size)
+
+    def on_draw(self, _widget, context):
+        if self.handle is None:
+            return False  # no librsvg here; the word beside it still says claude
+        allocation = self.get_allocation()
+        box = Rsvg.Rectangle()
+        box.x = (allocation.width - self.size) / 2
+        box.y = (allocation.height - self.size) / 2
+        box.width = box.height = float(self.size)
+        self.handle.render_document(context, box)
+        return True
+
+
 class PatrikOverlay(Gtk.Window):
     """The transparent window the money glyphs are drawn in.
 
@@ -822,11 +934,26 @@ class CostMeter(Gtk.Window):
         # because a caption that stayed 11 px while its value grew would look
         # like a rendering fault rather than a missing line of code.
         self.labels = []
-        self.last_turn = _row(grid, 0, "last turn", self.labels)
-        self.session = _row(grid, 1, "session", self.labels)
-        self.today = _row(grid, 2, "today", self.labels)
-        grid.attach(Gtk.Separator(), 0, 3, 2, 1)
-        self.window_5h = _row(grid, 4, "5h window", self.labels)
+
+        # Rows 0 and 1: the header and its separator. The mark and the word
+        # share one box rather than the grid's two columns, because the word
+        # belongs beside the mark at the mark's spacing, not out at the value
+        # column. Every row index below is literal and moved down two when this
+        # went in; the warning row's comment says why they are literal.
+        self.logo = Logo(logo_px(self.scale))
+        self.brand = Gtk.Label(label=BRAND, xalign=0.0)
+        self.brand.get_style_context().add_class("brand")
+        self.header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.header.pack_start(self.logo, False, False, 0)
+        self.header.pack_start(self.brand, False, False, 0)
+        grid.attach(self.header, 0, 0, 2, 1)
+        grid.attach(Gtk.Separator(), 0, 1, 2, 1)
+
+        self.last_turn = _row(grid, 2, "last turn", self.labels)
+        self.session = _row(grid, 3, "session", self.labels)
+        self.today = _row(grid, 4, "today", self.labels)
+        grid.attach(Gtk.Separator(), 0, 5, 2, 1)
+        self.window_5h = _row(grid, 6, "5h window", self.labels)
         # Directly under the 5h window, because it is the same kind of claim --
         # the account's share of a limit -- and because the week and the machine
         # dollars below it are a pair that must not be split. Its caption is
@@ -834,19 +961,19 @@ class CostMeter(Gtk.Window):
         # model the figure names, and `fable` is what a row with no scope on it
         # yet is left reading. See scoped_caption.
         self.scoped_name, self.scoped_value = _captioned_row(
-            grid, 5, "fable", self.labels)
-        self.window_7d = _row(grid, 6, "week", self.labels)
+            grid, 7, "fable", self.labels)
+        self.window_7d = _row(grid, 8, "week", self.labels)
         # Directly under the percentage it belongs to, because the two describe
         # the same seven days by different measures: the account's share of its
         # limit, and what this installation put into it. Adjacency is what says
         # they are one window; a caption naming the machine is what stops the
         # dollars being read as the account's.
-        self.week_local = _row(grid, 7, "this machine", self.labels)
+        self.week_local = _row(grid, 9, "this machine", self.labels)
         # Below a separator of its own: everything above is a measured figure,
         # and this is the fact that says what those figures mean — money owed on
         # API billing, notional against a seat.
-        grid.attach(Gtk.Separator(), 0, 8, 2, 1)
-        self.billing = _row(grid, 9, "billing", self.labels)
+        grid.attach(Gtk.Separator(), 0, 10, 2, 1)
+        self.billing = _row(grid, 11, "billing", self.labels)
         # The rows made of state.json's dollars, and so the rows staleness mutes.
         # The three limit rows are deliberately absent — see set_stale: they come
         # from Claude Code's cache instead, and `muted` reaches them only through
@@ -911,11 +1038,12 @@ class CostMeter(Gtk.Window):
         self.warning = Gtk.Label(label="", xalign=0.0)
         self.warning.get_style_context().add_class("warn")
         self.warning.set_no_show_all(True)
-        # Row 10, below `billing` on row 9: the two once shared a row and GTK drew
-        # them on top of each other, so the red staleness note sat over the
+        # Row 12, below `billing` on row 11: the two once shared a row and GTK
+        # drew them on top of each other, so the red staleness note sat over the
         # billing text. Every row index here is literal, so a row added above has
-        # to push this one down with it -- the scoped row did exactly that.
-        grid.attach(self.warning, 0, 10, 2, 1)
+        # to push this one down with it -- the scoped row did exactly that, and
+        # the header did it again.
+        grid.attach(self.warning, 0, 12, 2, 1)
 
         # After every label exists, since this is what sizes them.
         self.apply_scale(self.scale)
@@ -996,6 +1124,9 @@ class CostMeter(Gtk.Window):
         for label in self.labels:
             label.set_attributes(attrs)
         self.warning.set_attributes(font_attrs(warn_px(self.scale)))
+        self.brand.set_attributes(font_attrs(brand_px(self.scale)))
+        self.logo.set_size(logo_px(self.scale))
+        self.header.set_spacing(round(BRAND_SPACING * self.scale))
         self.grid.set_border_width(round(BORDER * self.scale))
         self.grid.set_row_spacing(round(ROW_SPACING * self.scale))
         self.grid.set_column_spacing(round(COLUMN_SPACING * self.scale))

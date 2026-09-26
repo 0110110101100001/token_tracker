@@ -11,6 +11,12 @@ figures *mean* is in [What it counts, and how](METERING.md).
 The panel is a small borderless window anchored to the bottom-right corner of
 your screen. It shows these rows:
 
+- **header** — the Claude mark and the word `claude`. Below it the panel is
+  the same dark table as the codex one, so the header is what tells the two
+  apart on one screen: the mark is drawn in Anthropic's terracotta, the codex
+  mark in the label grey. It is SVG rendered by librsvg, so it stays sharp at
+  every scale; without librsvg the word alone is shown.
+- *(separator)*
 - **last turn** — USD cost of the assistant turn that just finished
 - **session** — USD cost of the current Claude Code session
 - **today** — USD cost since local midnight

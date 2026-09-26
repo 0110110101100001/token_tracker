@@ -3,6 +3,16 @@
 What changed in each release. Versions before 2.0 are in their tag messages:
 `git tag -n50`.
 
+## Unreleased
+
+### Added
+
+- A header at the top of the panel: the Claude mark, in Anthropic's terracotta,
+  and the word `claude` beside it, as the codex panel carries the OpenAI mark
+  and `codex`. Below the header the two are the same dark table, so this is
+  what tells them apart on one screen. The mark is SVG rendered by librsvg and
+  scales with the rest of the panel. See [PANEL.md](PANEL.md).
+
 ## 2.0
 
 ### Added

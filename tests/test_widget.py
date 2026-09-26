@@ -641,12 +641,22 @@ class ScaleSizeTest(unittest.TestCase):
     def test_scale_one_is_the_size_the_panel_has_always_been(self):
         self.assertEqual(widget.font_px(1.0), 11)
         self.assertEqual(widget.warn_px(1.0), 10)
+        self.assertEqual(widget.brand_px(1.0), 13)
+        self.assertEqual(widget.logo_px(1.0), 15)
         self.assertEqual(widget.width_for_scale(1.0), widget.WIDTH)
 
     def test_every_size_follows_the_scale(self):
         self.assertEqual(widget.font_px(2.0), 22)
         self.assertEqual(widget.warn_px(2.0), 20)
+        self.assertEqual(widget.brand_px(2.0), 26)
+        self.assertEqual(widget.logo_px(2.0), 30)
         self.assertEqual(widget.width_for_scale(2.0), widget.WIDTH * 2)
+
+    def test_the_brand_word_stays_larger_than_the_value_rows(self):
+        # It is a heading and has to keep reading as one, at every scale.
+        for scale in (widget.MIN_SCALE, 1.0, widget.MAX_SCALE):
+            self.assertGreater(widget.brand_px(scale), widget.font_px(scale),
+                               f"at scale {scale}")
 
     def test_the_warning_row_stays_smaller_than_the_value_rows(self):
         # It is a footnote and has to keep reading as one. At the smallest scale
@@ -665,6 +675,40 @@ class ScaleSizeTest(unittest.TestCase):
         after it, and look convincingly like it worked.
         """
         self.assertNotIn("font-size", widget.CSS.decode("utf-8"))
+
+
+class HeaderTest(unittest.TestCase):
+    """The mark at the top of the panel, which is what tells it from the codex one.
+
+    Headless on purpose: parsing the SVG needs librsvg and no display, and a
+    parse failure is the way the mark goes missing without a word of error --
+    Logo.on_draw draws nothing rather than crash the panel.
+    """
+
+    def setUp(self):
+        try:
+            import gi
+            gi.require_version("Rsvg", "2.0")
+            from gi.repository import Rsvg
+        except (ImportError, ValueError):
+            self.skipTest("librsvg not available")
+        self.Rsvg = Rsvg
+
+    def test_the_mark_parses(self):
+        handle = self.Rsvg.Handle.new_from_data(widget.CLAUDE_LOGO_SVG)
+        self.assertIsNotNone(handle)
+        # A square viewBox, so drawing it into a square box distorts nothing.
+        self.assertIn('viewBox="0 0 24 24"', widget.CLAUDE_LOGO_SVG.decode("utf-8"))
+
+    def test_the_mark_carries_its_own_colour(self):
+        # Simple Icons paths ship without a fill and render black, which on the
+        # panel's near-black background is no mark at all.
+        svg = widget.CLAUDE_LOGO_SVG.decode("utf-8")
+        self.assertIn(f'fill="{widget.LOGO_COLOUR}"', svg)
+        self.assertIn("<title>Claude</title>", svg)
+
+    def test_the_brand_word_names_the_panel(self):
+        self.assertEqual(widget.BRAND, "claude")
 
 
 class ResizeZoneTest(unittest.TestCase):
