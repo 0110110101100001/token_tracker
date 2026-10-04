@@ -2,6 +2,13 @@
 
 
 
+## 3.1
+
+### Changed
+
+- `claude-sonnet-5-5` is included in pricing at $2 / $10 per million tokens,
+  with cache reads at $0.20, so with Opus 5.5 both 5.5 models are counted.
+
 ## 3.0
 
 ### Added
