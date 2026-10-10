@@ -39,6 +39,14 @@ class TestPriceEvent(unittest.TestCase):
         usd = price_event(PRICING, "claude-sonnet-5", 1_000_000, 0, 0, 0, 0)
         self.assertAlmostEqual(usd, 3.0)
 
+    def test_long_prompt_tier_applies_only_above_its_threshold(self):
+        pricing = {"m": {"input": 1.0, "output": 2.0,
+                         "long_prompt": {"over": 100, "input": 10.0, "output": 20.0}}}
+        at = price_event(pricing, "m", 100, 1_000_000, 0, 0, 0)
+        over = price_event(pricing, "m", 60, 1_000_000, 20, 0, 21)
+        self.assertAlmostEqual(at, 100 / 1e6 + 2.0)
+        self.assertAlmostEqual(over, (60 + 20 * 1.25 + 21 * 0.1) * 10 / 1e6 + 20.0)
+
     def test_unknown_model_raises_and_names_the_model(self):
         with self.assertRaises(UnknownModel) as ctx:
             price_event(PRICING, "claude-nonexistent-9", 100, 100, 0, 0, 0)
@@ -64,6 +72,20 @@ class TestShippedTable(unittest.TestCase):
         usd = price_event(self.pricing, "claude-sonnet-5-5", 1_000_000, 1_000_000,
                           0, 0, 1_000_000)
         self.assertAlmostEqual(usd, 2.0 + 10.0 + 0.2)
+
+    def test_haiku_5_5_is_priced_up_to_100k(self):
+        # $0.10 / $0.50 per million while the prompt is 100K tokens or fewer;
+        # cache reads are the usual tenth of input.
+        usd = price_event(self.pricing, "claude-haiku-5-5", 50_000, 1_000_000,
+                          0, 0, 50_000)
+        self.assertAlmostEqual(usd, 0.005 + 0.5 + 0.0005)
+
+    def test_haiku_5_5_over_100k_is_priced_at_the_long_prompt_rates(self):
+        # Cache reads count toward the prompt: 1K fresh input over 100K cached
+        # puts the whole message on $0.50 / $2.50, reads at $0.05.
+        usd = price_event(self.pricing, "claude-haiku-5-5", 1_000, 1_000_000,
+                          0, 0, 100_000)
+        self.assertAlmostEqual(usd, 0.0005 + 2.5 + 0.005)
 
 
 if __name__ == "__main__":
