@@ -2,6 +2,15 @@
 
 
 
+## 3.2
+
+### Changed
+
+- `claude-haiku-5-5` is included in pricing at $0.10 / $0.50 per million
+  tokens while the prompt is 100K tokens or fewer, and $0.50 / $2.50 above
+  that. The prompt counts cache reads and writes, so a long session is
+  charged at the higher rates.
+
 ## 3.1
 
 ### Changed
