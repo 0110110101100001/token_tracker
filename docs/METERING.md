@@ -222,7 +222,7 @@ Fable 5.1: its published cache-read price is $0.25 against a $10 input rate,
 a fortieth rather than a tenth, and a session that is mostly cache reads would
 otherwise be overcounted four times over on that model. Opus 5.5 uses it too:
 cache reads at $0.20 against a $4 input rate, a twentieth, which the tenth
-would count twice over. Fable 5.2 as well: $0.20 against an $8 input rate, a
+would count twice over; Sonnet 5.5 likewise, $0.10 against $2. Fable 5.2 as well: $0.20 against an $8 input rate, a
 fortieth again.
 
 No rate in that table has a known expiry date. `claude-sonnet-5` used to
