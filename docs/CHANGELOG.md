@@ -2,6 +2,13 @@
 
 
 
+## 3.3
+
+### Changed
+
+- `claude-fable-5-2` is included in pricing at $8 / $40 per million tokens,
+  with cache reads at $0.20, so Fable 5.2 turns are counted.
+
 ## 3.2
 
 ### Changed
