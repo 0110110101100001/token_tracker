@@ -74,11 +74,11 @@ class TestShippedTable(unittest.TestCase):
         self.assertAlmostEqual(usd, 4.0 + 20.0 + 0.2)
 
     def test_sonnet_5_5_is_priced(self):
-        # $2 / $10 per million, cache reads at $0.20 -- the usual tenth of
-        # input, so the entry needs no `cache_read` of its own.
+        # $2 / $10 per million, cache reads at $0.10 -- a twentieth of input,
+        # so the entry needs its own `cache_read`; the tenth would read $0.20.
         usd = price_event(self.pricing, "claude-sonnet-5-5", 1_000_000, 1_000_000,
                           0, 0, 1_000_000)
-        self.assertAlmostEqual(usd, 2.0 + 10.0 + 0.2)
+        self.assertAlmostEqual(usd, 2.0 + 10.0 + 0.1)
 
     def test_haiku_5_5_is_priced_up_to_100k(self):
         # $0.10 / $0.50 per million while the prompt is 100K tokens or fewer;

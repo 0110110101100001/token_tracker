@@ -2,6 +2,14 @@
 
 
 
+## 3.4
+
+### Fixed
+
+- `claude-sonnet-5-5` cache reads are priced at $0.10 per million tokens, a
+  twentieth of input. The entry had no `cache_read` of its own, so reads
+  were counted at the usual tenth, $0.20: twice the published rate.
+
 ## 3.3
 
 ### Changed
