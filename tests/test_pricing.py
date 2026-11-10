@@ -59,6 +59,13 @@ class TestShippedTable(unittest.TestCase):
     def setUp(self):
         self.pricing = load_pricing(paths.pricing_path())
 
+    def test_fable_5_2_is_priced(self):
+        # $8 / $40 per million, cache reads at $0.20 -- a fortieth of input,
+        # so the entry needs its own `cache_read`; the tenth would read $0.80.
+        usd = price_event(self.pricing, "claude-fable-5-2", 1_000_000, 1_000_000,
+                          0, 0, 1_000_000)
+        self.assertAlmostEqual(usd, 8.0 + 40.0 + 0.2)
+
     def test_opus_5_5_is_priced(self):
         # $4 / $20 per million, cache reads at $0.20 -- a twentieth of input,
         # so the entry needs its own `cache_read`; the tenth would read $0.40.
